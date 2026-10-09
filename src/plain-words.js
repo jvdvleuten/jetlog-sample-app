@@ -37,7 +37,7 @@ export function describeGrant({ requested, granted }) {
   }[grantedLevel];
 
   const downgradeNote = downgraded
-    ? 'This app asked for the whole logbook and got less. Either the pilot chose the lower level in the Jetlog app, or Jetlog does not allow this app to ask for more. Reading and proposing are switched off. To ask again, disconnect and connect again.'
+    ? 'This app asked for the whole logbook and got less. There are two possible reasons. The pilot chose the lower level in the Jetlog app, or Jetlog has not enabled the whole logbook for this app, in which case Jetlog quietly grants own flights only and reports no error. Reading and proposing are switched off. To ask again, disconnect and connect again. If Jetlog has not enabled the whole logbook for this app, asking again gives the same result.'
     : null;
 
   return { grantedLevel, requestedLevel, downgraded, headline, summary, downgradeNote, abilities };
@@ -49,17 +49,17 @@ export function describeChangeStatus(status) {
     case 'pending':
       return 'Waiting for the pilot. Nothing has changed. The pilot can approve or reject the proposal in the Jetlog app.';
     case 'applied':
-      return 'The pilot approved the proposal in the Jetlog app and Jetlog applied it.';
+      return 'The pilot approved the proposal in the Jetlog app and Jetlog applied it. A pilot can approve only some of the operations, so check which ones were applied below.';
     case 'rejected':
       return 'The pilot rejected the proposal. Nothing changed.';
     case 'expired':
-      return 'Nobody decided in time, so the proposal expired. Nothing changed.';
+      return 'Nobody decided within 24 hours, so the proposal expired. Nothing changed.';
     case 'stale':
-      return 'The flight changed after this proposal was made, so the proposal no longer fits. Nothing was applied. Propose again if you still want it.';
+      return 'Something this proposal touches changed after the proposal was made, so Jetlog did not apply it. Nothing was applied. Propose again if you still want the change.';
     case 'failed':
-      return 'Jetlog could not apply the proposal.';
+      return 'Applying the proposal failed. Jetlog shows the error below when it has one.';
     case 'revoked':
-      return 'The connection that made this proposal was revoked, so Jetlog will not apply it.';
+      return 'The pilot disconnected this app in Jetlog, so its open proposals were revoked. Nothing was applied.';
     default:
       return `Jetlog reported the status "${status}", which this sample does not know.`;
   }

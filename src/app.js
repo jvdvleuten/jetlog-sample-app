@@ -91,9 +91,9 @@ export function createApp({ config, store, now = Date.now }) {
   // 5. Who is connected, and the newest flights.
   async function showLogbook(req, res) {
     try {
-      const [me, recent] = await Promise.all([api.getMe(), api.listRecentFlights()]);
+      const [pilot, recent] = await Promise.all([api.getPilot(), api.listRecentFlights()]);
       const grant = describeGrant({ requested: '', granted: store.load()?.scope });
-      sendHtml(res, logbookPage({ me, recent, canPropose: grant.abilities.propose, flash: takeFlash() }));
+      sendHtml(res, logbookPage({ pilot, recent, canPropose: grant.abilities.propose, flash: takeFlash() }));
     } catch (err) {
       flash = errorFlash(err);
       redirect(res, '/');

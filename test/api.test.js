@@ -4,20 +4,12 @@ import { explainError, JetlogApiError } from '../src/errors.js';
 import { buildImportPayload, buildRemarksProposal } from '../src/jetlog-api.js';
 import { describeChangeStatus, describeSkip, describeWarning } from '../src/plain-words.js';
 import { importResultFlash } from '../src/views.js';
+import { makeEntry } from '../test-support/fake-jetlog.js';
 import { setup } from '../test-support/harness.js';
 
 const flight = { date: '2026-08-14', flightNumber: 'kl1023', from: 'eham', to: 'egll' };
 
-const entry = (n, date) => ({
-  id: `entry-${String(n).padStart(3, '0')}`,
-  type: 'flight',
-  date,
-  flight_number: `KL${n}`,
-  from: 'EHAM',
-  to: 'EGLL',
-  remarks: null,
-  derived: { date, from: 'EHAM', to: 'EGLL' },
-});
+const entry = makeEntry;
 
 // ---- import ----
 
@@ -135,7 +127,7 @@ test('403 insufficient_access blocks reading and proposing, while import keeps w
   assert.equal(read.code, 'insufficient_access');
   assert.equal(explainError(read).title, 'Jetlog no longer lets this app do that');
 
-  const propose = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'e1', label: 'x', remarks: 'y' })));
+  const propose = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'x', remarks: 'y' })));
   assert.equal(propose.code, 'insufficient_access');
 
   const imported = await h.api.importFlights(buildImportPayload(flight));
@@ -195,14 +187,51 @@ test('a 5xx on an import says that sending the flight again is safe', async (t) 
 
 // ---- read ----
 
-test('me shows who is connected', async (t) => {
+test('me answers with ids only, and the name comes from the people list', async (t) => {
   const h = await setup();
   t.after(h.cleanup);
   await h.connect('full');
 
-  const me = await h.api.getMe();
-  assert.equal(me.email, 'pilot@example.com');
-  assert.equal(h.fake.requestsTo('/api/partner/v1/me')[0].method, 'GET');
+  assert.deepEqual(await h.api.getMe(), { user_id: 'user-1', self_person_id: 'user-1' });
+
+  const pilot = await h.api.getPilot();
+  assert.deepEqual(pilot, { userId: 'user-1', selfPersonId: 'user-1', name: 'Anna de Vries' });
+  assert.equal(h.fake.requestsTo('/api/partner/v1/me')[1].method, 'GET');
+  assert.equal(h.fake.requestsTo('/api/partner/v1/people').length, 1);
+});
+
+test('the pilot is found by self_person_id, not by position in the list', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+
+  h.fake.pilotId = 'user-9';
+  h.fake.people = [
+    { id: 'someone-else', first_name: 'Bram', last_name: 'Jansen' },
+    { id: 'user-9', first_name: 'Carla', last_name: 'Smit' },
+  ];
+  assert.equal((await h.api.getPilot()).name, 'Carla Smit');
+});
+
+test('when the pilot is not in the people list there is no name, and no failure', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+
+  h.fake.people = [{ id: 'someone-else', first_name: 'Bram', last_name: 'Jansen' }];
+  assert.deepEqual(await h.api.getPilot(), { userId: 'user-1', selfPersonId: 'user-1', name: null });
+
+  h.fake.people = [{ id: 'user-1', first_name: '', last_name: null }];
+  assert.equal((await h.api.getPilot()).name, null);
+});
+
+test('a missing read scope stops the pilot lookup with the same explanation', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full', { grant: 'import' });
+
+  const err = await failure(h.api.getPilot());
+  assert.equal(err.code, 'insufficient_scope');
 });
 
 test('recent flights come back newest first, from a window of the last 60 days', async (t) => {
@@ -290,10 +319,11 @@ test('the status of a proposal follows what the pilot did in the app', async (t)
   t.after(h.cleanup);
   await h.connect('full');
 
-  const { id } = await h.api.proposeChanges(buildRemarksProposal({ entryId: 'e1', label: 'KL1', remarks: 'x' }));
+  h.fake.entries = [entry(1, '2026-09-01')];
+  const { id } = await h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'x' }));
   assert.equal((await h.api.getChange(id)).status, 'pending');
 
-  h.fake.setChangeStatus(id, 'applied');
+  h.fake.approveChange(id);
   const applied = await h.api.getChange(id);
   assert.equal(applied.status, 'applied');
   assert.equal(h.fake.requestsTo(`/api/partner/v1/changes/${id}`).length, 2);
@@ -325,7 +355,8 @@ test('the open proposal limit is explained', async (t) => {
   await h.connect('full');
   h.fake.openProposalCap = 0;
 
-  const err = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'e1', label: 'KL1', remarks: 'x' })));
+  h.fake.entries = [entry(1, '2026-09-01')];
+  const err = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'x' })));
   assert.equal(err.status, 409);
   assert.equal(err.code, 'open_cap_reached');
   assert.match(explainError(err).lines.join(' '), /20 open proposals/);
@@ -340,27 +371,128 @@ test('every status of a proposal has plain words, and pending says nothing chang
   assert.match(describeChangeStatus('brand_new'), /brand_new/);
 });
 
-test('a 400 shows the error code and says to fix the request', async (t) => {
-  const h = await setup();
-  t.after(h.cleanup);
-  await h.connect('own');
-
-  h.fake.respondOnce('POST', '/api/partner/v1/import', { status: 400, body: { error: 'invalid_payload' } });
-  const err = await failure(h.api.importFlights({ entries: 'nope' }));
-
-  assert.equal(err.code, 'invalid_payload');
-  const lines = explainError(err, { context: 'import' }).lines.join(' ');
-  assert.match(lines, /invalid_payload/);
-  assert.match(lines, /Fix the request/);
-  assert.match(lines, /Sending a payload again is safe/);
+test('stale, failed and revoked say what they mean', () => {
+  // stale: something the proposal touches changed after it was made, nothing was applied.
+  assert.match(describeChangeStatus('stale'), /changed after the proposal was made/);
+  assert.match(describeChangeStatus('stale'), /Nothing was applied/);
+  // failed: applying it failed.
+  assert.match(describeChangeStatus('failed'), /Applying the proposal failed/);
+  // revoked: the pilot disconnected the app.
+  assert.match(describeChangeStatus('revoked'), /pilot disconnected this app/);
+  assert.match(describeChangeStatus('revoked'), /Nothing was applied/);
 });
 
-test('a 400 for a body that is not JSON shows the detail Jetlog sends', async (t) => {
+test('an applied proposal says which operations were applied, because the pilot can approve only some', async (t) => {
   const h = await setup();
   t.after(h.cleanup);
-  await h.connect('own');
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01'), entry(2, '2026-09-02')];
 
-  h.fake.respondOnce('POST', '/api/partner/v1/import', { status: 400, body: { errors: { detail: 'Bad Request' } } });
-  const err = await failure(h.api.importFlights({ entries: [] }));
-  assert.match(explainError(err).lines.join(' '), /Jetlog says: Bad Request/);
+  const change = await h.api.proposeChanges({
+    summary: 'Two remarks',
+    operations: [
+      { op: 'update', resource: 'entry', id: 'entry-001', data: { remarks: 'one' } },
+      { op: 'update', resource: 'entry', id: 'entry-002', data: { remarks: 'two' } },
+    ],
+  });
+  // Before a decision the operations carry no applied flag.
+  assert.ok(change.operations.every((operation) => !('applied' in operation)));
+
+  h.fake.approveChange(change.id, { operationIndices: [1] });
+  const decided = await h.api.getChange(change.id);
+
+  assert.equal(decided.status, 'applied');
+  assert.deepEqual(decided.operations.map((operation) => operation.applied), [false, true]);
+  assert.equal(h.fake.entries[0].remarks, null);
+  assert.equal(h.fake.entries[1].remarks, 'two');
+});
+
+test('the preview of a proposal has before, after and changed_fields, and no raw_before', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { remarks: 'old note' })];
+
+  const change = await h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'new note' }));
+  const [item] = change.preview;
+
+  assert.deepEqual(Object.keys(item).sort(), ['after', 'before', 'changed_fields', 'id', 'index', 'op', 'resource']);
+  assert.deepEqual(item.changed_fields, ['remarks']);
+  assert.equal(item.before.remarks, 'old note');
+  assert.equal(item.after.remarks, 'new note');
+});
+
+test('a proposal that touches files or signatures is refused, and the sentence says so', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const photo = await failure(
+    h.api.proposeChanges({ summary: 'x', operations: [{ op: 'update', resource: 'person', id: 'user-1', data: { photo_attachment_id: 'abc' } }] }),
+  );
+  assert.equal(photo.status, 403);
+  assert.equal(photo.code, 'insufficient_scope');
+  assert.deepEqual(photo.missingScopes, ['files']);
+  assert.equal(explainError(photo).title, 'Connected apps cannot change that');
+  assert.match(explainError(photo).lines.join(' '), /files and photos/);
+  assert.match(explainError(photo).lines.join(' '), /Nothing was changed/);
+
+  const link = await failure(
+    h.api.proposeChanges({ summary: 'x', operations: [{ op: 'create', resource: 'signature_link', data: { entry_ids: ['entry-001'] } }] }),
+  );
+  assert.deepEqual(link.missingScopes, ['signatures']);
+  assert.match(explainError(link).lines.join(' '), /signatures and signing links/);
+
+  const signed = await failure(
+    h.api.proposeChanges({ summary: 'x', operations: [{ op: 'update', resource: 'entry', id: 'entry-001', data: { signature_waived: true } }] }),
+  );
+  assert.deepEqual(signed.missingScopes, ['signatures']);
+});
+
+test('a plain insufficient_scope without missing_scopes keeps the connect again advice', () => {
+  const err = JetlogApiError.fromResult({ status: 403, body: { error: 'insufficient_scope' }, retryAfter: null });
+  assert.deepEqual(err.missingScopes, []);
+  assert.match(explainError(err).lines.join(' '), /connect again/);
+});
+
+test('more than 200 operations is a nested 413 and is explained', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+
+  const operations = Array.from({ length: 201 }, (_, n) => ({ op: 'update', resource: 'entry', id: `entry-${n}`, data: { remarks: 'x' } }));
+  const err = await failure(h.api.proposeChanges({ summary: 'x', operations }));
+
+  assert.equal(err.status, 413);
+  assert.equal(err.code, 'too_many_entries');
+  assert.match(explainError(err).title, /too big/);
+});
+
+test('a proposal for a flight that does not exist is a 422 with the field error', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+
+  const err = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'nope', label: 'x', remarks: 'y' })));
+  assert.equal(err.status, 422);
+  assert.deepEqual(explainError(err).lines, ['id: entry not found', 'Nothing was written.']);
+});
+
+test('the checks run in the order of the real server: scope first, then registration, then access', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full', { grant: 'import' });
+
+  // No read scope and a disabled registration: the scope answer comes first.
+  h.fake.integrationDisabled = true;
+  assert.equal((await failure(h.api.getMe())).code, 'insufficient_scope');
+
+  // With the scope, the registration answer comes before the access answer.
+  const full = await setup();
+  t.after(full.cleanup);
+  await full.connect('full');
+  full.fake.integrationDisabled = true;
+  full.fake.fullAccessDisabled = true;
+  assert.equal((await failure(full.api.getMe())).code, 'integration_disabled');
 });

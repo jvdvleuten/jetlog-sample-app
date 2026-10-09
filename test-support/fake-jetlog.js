@@ -1,10 +1,44 @@
 // A small stand-in for Jetlog that runs on a local port, so the tests need no
-// network and no account. It follows the shapes in the Jetlog guide, and it checks
+// network and no account. It follows the answers of the real server, and it checks
 // what the sample sends (PKCE, redirect address, resource, scopes) the way the real
 // server does, so a mistake in the sample shows up as a failing test.
 
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+
+// A flight as the read routes send it: the fields of the app's own query answer.
+// There is no signature, attachment or photo field in it, on purpose.
+export function makeEntry(n, date, overrides = {}) {
+  const id = `entry-${String(n).padStart(3, '0')}`;
+  return {
+    id,
+    version: 1,
+    type: 'flight',
+    date,
+    entry_source: 'app',
+    flight_number: `KL${n}`,
+    registration: null,
+    from: 'EHAM',
+    to: 'EGLL',
+    actual_from: null,
+    actual_to: null,
+    off_blocks: null,
+    airborne: null,
+    touchdown: null,
+    on_blocks: null,
+    update_flight_data: true,
+    derived: { date, registration: null, from: 'EHAM', to: 'EGLL', off_blocks: null, airborne: null, touchdown: null, on_blocks: null },
+    is_completed: false,
+    takeoffs_and_landings: null,
+    approaches: [],
+    remarks: null,
+    people: [],
+    is_deleted: false,
+    updated_at: '2026-10-01T10:00:00Z',
+    calculated_times: null,
+    ...overrides,
+  };
+}
 
 const sha256url = (text) => createHash('sha256').update(text, 'ascii').digest('base64url');
 
@@ -29,6 +63,21 @@ export async function startFakeJetlog() {
     // Set to switch off reading and proposing, like a registration that lost whole logbook access.
     fullAccessDisabled: false,
     integrationDisabled: false,
+    // Whole logbook access enabled for the app. When it is not, a request for the
+    // whole logbook is quietly narrowed to own flights, without an error.
+    wholeLogbookEnabled: true,
+    // The pilot of the account. /me gives the ids, the name is in /people.
+    pilotId: 'user-1',
+    people: [
+      {
+        id: 'user-1',
+        first_name: 'Anna',
+        last_name: 'de Vries',
+        default_role: 'Captain',
+        employee_number: null,
+        is_imported_from_other_logbook: false,
+      },
+    ],
     entries: [],
     maxPageSize: 200,
     openProposalCap: 20,
@@ -57,7 +106,7 @@ export async function startFakeJetlog() {
         redirectUri: query.get('redirect_uri'),
         resource: query.get('resource'),
         challenge: query.get('code_challenge'),
-        scope: scope ?? query.get('scope'),
+        scope: scope ?? narrowed(query.get('scope')),
         used: false,
         issued: [],
       });
@@ -89,8 +138,27 @@ export async function startFakeJetlog() {
       oneOffAnswers.push({ method, path, answer });
     },
 
-    setChangeStatus(id, status) {
-      changes.get(id).status = status;
+    // What the pilot does in the Jetlog app. Approving can be partial: pass the
+    // indices of the operations the pilot picked. An approved remarks change lands
+    // on the fake logbook.
+    approveChange(id, { operationIndices } = {}) {
+      const change = changes.get(id);
+      const picked = operationIndices ?? change.operations.map((_, index) => index);
+      change.status = 'applied';
+      change.decided_at = new Date().toISOString();
+      change.applied_batch_id = randomUUID();
+      change.operations = change.operations.map((operation, index) => ({ ...operation, applied: picked.includes(index) }));
+      change.counts = { creates: 0, updates: picked.length, deletes: 0 };
+      for (const index of picked) {
+        const operation = change.operations[index];
+        const entry = fake.entries.find((row) => row.id === operation.id);
+        if (entry) Object.assign(entry, operation.data);
+      }
+    },
+
+    // Any other outcome: 'rejected', 'expired', 'stale', 'failed' or 'revoked'.
+    setChangeStatus(id, status, extra = {}) {
+      Object.assign(changes.get(id), { status, decided_at: new Date().toISOString(), ...extra });
     },
 
     changes,
@@ -106,6 +174,14 @@ export async function startFakeJetlog() {
         server.close(resolve);
       }),
   };
+
+  // The full set only when it was asked for in full and Jetlog enabled it for the
+  // app. Anything else becomes plain import, with no error.
+  function narrowed(requested) {
+    const scopes = requested.split(' ');
+    const full = scopes.includes('read') && scopes.includes('write');
+    return full && fake.wholeLogbookEnabled ? 'import read write' : 'import';
+  }
 
   function issueTokens(scope, source = {}) {
     const accessToken = `jlp_access_${(sequence += 1)}`;
@@ -189,13 +265,16 @@ export async function startFakeJetlog() {
     return token;
   }
 
+  // The checks of every partner route, in the order of the real server: the token
+  // (done before), the scope, the registration, and for reading and proposing
+  // whether the whole logbook is still enabled for the app.
   function needs(token, scope, reply) {
-    if (fake.integrationDisabled) {
-      reply(403, { error: 'integration_disabled' });
-      return false;
-    }
     if (!token.scope.split(' ').includes(scope)) {
       reply(403, { error: 'insufficient_scope' });
+      return false;
+    }
+    if (fake.integrationDisabled) {
+      reply(403, { error: 'integration_disabled' });
       return false;
     }
     if (scope !== 'import' && fake.fullAccessDisabled) {
@@ -221,7 +300,13 @@ export async function startFakeJetlog() {
 
     if (method === 'GET' && route === '/me') {
       if (!needs(token, 'read', reply)) return;
-      return reply(200, { user_id: 'user-1', self_person_id: 'user-1', email: 'pilot@example.com' });
+      // Ids only. There is no email and no name.
+      return reply(200, { user_id: fake.pilotId, self_person_id: fake.pilotId });
+    }
+
+    if (method === 'GET' && route === '/people') {
+      if (!needs(token, 'read', reply)) return;
+      return reply(200, { people: fake.people });
     }
 
     if (method === 'GET' && route === '/entries') {
@@ -262,37 +347,86 @@ export async function startFakeJetlog() {
     };
   }
 
-  function proposeChange(body, reply) {
-    const errors = [];
-    if (!Array.isArray(body.operations) || body.operations.length === 0) {
-      errors.push({ index: null, field: 'operations', message: 'must not be empty' });
+  // Files, photos, signatures and signing links are refused for every connected app,
+  // before anything else is looked at.
+  function refusedScope(operations) {
+    const filesKeys = ['photo_attachment_id', 'photo_sha256'];
+    const signatureKeys = ['signature', 'signature_attachment_id', 'signature_sha256', 'signature_waived'];
+    for (const operation of operations) {
+      const keys = Object.keys(operation.data ?? {});
+      if (operation.resource === 'entry_attachment' || keys.some((key) => filesKeys.includes(key))) return 'files';
+      if (operation.resource === 'signature_link' || keys.some((key) => signatureKeys.includes(key))) return 'signatures';
     }
-    for (const [index, operation] of (body.operations ?? []).entries()) {
+    return null;
+  }
+
+  function proposeChange(body, reply) {
+    const operations = Array.isArray(body.operations) ? body.operations : [];
+
+    if (operations.length > 200) {
+      return reply(413, { error: { code: 'too_many_entries', message: `Too many operations (${operations.length})` } });
+    }
+
+    const refused = refusedScope(operations);
+    if (refused) {
+      return reply(403, {
+        error: 'insufficient_scope',
+        message: `Connected apps never get the "${refused}" permission. Nothing was changed.`,
+        missing_scopes: [refused],
+      });
+    }
+
+    const errors = [];
+    if (operations.length === 0) errors.push({ index: null, field: 'operations', message: 'must not be empty' });
+    for (const [index, operation] of operations.entries()) {
       if (!['create', 'update', 'delete'].includes(operation.op)) {
-        errors.push({ index, field: 'op', message: 'must be one of create, update, delete' });
+        errors.push({ index, field: 'op', message: 'must be one of ["create", "update", "delete"]' });
       }
       if (operation.op !== 'create' && typeof operation.id !== 'string') {
         errors.push({ index, field: 'id', message: 'required for update/delete' });
+      } else if (operation.op !== 'create' && !fake.entries.some((row) => row.id === operation.id)) {
+        errors.push({ index, field: 'id', message: 'entry not found' });
       }
     }
     if (errors.length) return reply(422, { error: { message: 'Invalid operations', errors } });
 
     const open = [...changes.values()].filter((change) => change.status === 'pending').length;
     if (open >= fake.openProposalCap) {
-      return reply(409, { error: { message: 'Too many open pending changes', code: 'open_cap_reached' } });
+      return reply(409, { error: { code: 'open_cap_reached', message: 'Too many open pending changes' } });
     }
 
+    // The preview a partner gets: before, after and changed_fields per item, and no
+    // raw_before and no signature or photo state.
+    const preview = operations.map((operation, index) => {
+      const before = fake.entries.find((row) => row.id === operation.id);
+      const changed = Object.keys(operation.data ?? {});
+      return {
+        index,
+        op: operation.op,
+        resource: operation.resource,
+        id: operation.id,
+        before: before ? { id: before.id, date: before.date, flight_number: before.flight_number, from: before.from, to: before.to, remarks: before.remarks } : null,
+        after: before ? { id: before.id, date: before.date, flight_number: before.flight_number, from: before.from, to: before.to, remarks: before.remarks, ...operation.data } : null,
+        changed_fields: changed,
+      };
+    });
+
+    const now = Date.now();
     const change = {
       id: randomUUID(),
       status: 'pending',
       client_kind: 'partner',
       client_name: 'Jetlog Sample App',
       summary: body.summary,
-      operations: body.operations,
-      preview: [],
-      counts: { creates: 0, updates: body.operations.length, deletes: 0 },
+      counts: { creates: 0, updates: operations.length, deletes: 0 },
+      operations: operations.map((operation, index) => ({ index, ...operation })),
+      preview,
+      created_at: new Date(now).toISOString(),
+      expires_at: new Date(now + 24 * 60 * 60 * 1000).toISOString(),
+      decided_at: null,
+      applied_batch_id: null,
+      reverted_indices: [],
       error: null,
-      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     };
     changes.set(change.id, change);
     return reply(201, { pending_change: change });

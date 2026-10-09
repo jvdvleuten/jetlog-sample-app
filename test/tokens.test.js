@@ -85,7 +85,7 @@ test('five parallel requests with an expired token cause one refresh and all suc
   const answers = await Promise.all([1, 2, 3, 4, 5].map(() => h.api.getMe()));
 
   assert.equal(h.fake.refreshCalls, 1);
-  assert.ok(answers.every((me) => me.email === 'pilot@example.com'));
+  assert.ok(answers.every((me) => me.self_person_id === 'user-1'));
 });
 
 test('a token that somebody else already replaced is not refreshed a second time', async (t) => {
@@ -112,7 +112,7 @@ test('a 401 causes one refresh and one retry, and the retry succeeds', async (t)
   h.fake.expireAccessTokens();
   const me = await h.api.getMe();
 
-  assert.equal(me.email, 'pilot@example.com');
+  assert.equal(me.user_id, 'user-1');
   assert.equal(h.fake.refreshCalls, 1);
 
   const calls = h.fake.requestsTo('/api/partner/v1/me');

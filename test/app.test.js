@@ -5,6 +5,7 @@ import { request as httpRequest, createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { test } from 'node:test';
 import { createApp } from '../src/app.js';
+import { makeEntry } from '../test-support/fake-jetlog.js';
 import { setup } from '../test-support/harness.js';
 
 async function freePort() {
@@ -94,9 +95,7 @@ test('pressing a connect button sends the pilot to Jetlog with the matching scop
 
 test('the full path: connect, import, read, propose, check the status, disconnect', async (t) => {
   const s = await startSample(t);
-  s.fake.entries = [
-    { id: 'entry-001', type: 'flight', date: '2026-10-01', flight_number: 'KL1001', from: 'EHAM', to: 'LEMD', remarks: null, derived: { date: '2026-10-01', from: 'EHAM', to: 'LEMD' } },
-  ];
+  s.fake.entries = [makeEntry(1, '2026-10-01', { flight_number: 'KL1001', to: 'LEMD', derived: { date: '2026-10-01', from: 'EHAM', to: 'LEMD' } })];
 
   // Connect, and see what was granted.
   await s.connectThroughPages('full');
@@ -124,7 +123,8 @@ test('the full path: connect, import, read, propose, check the status, disconnec
   // Read.
   const logbook = await s.get('/logbook');
   assert.equal(logbook.status, 200);
-  assert.match(logbook.text, /pilot@example.com/);
+  assert.match(logbook.text, /Anna de Vries/);
+  assert.doesNotMatch(logbook.text, /@/);
   assert.match(logbook.text, /KL1001/);
   assert.match(logbook.text, /action="\/propose"/);
 
@@ -139,11 +139,18 @@ test('the full path: connect, import, read, propose, check the status, disconnec
   assert.match(status.text, /Status: pending/);
   assert.match(status.text, /Nothing changes until the pilot approves it in the Jetlog app/);
 
+  // What the proposal changes, from the preview.
+  assert.match(status.text, /What it changes/);
+  assert.match(status.text, /<code>remarks<\/code><\/td><td>\(empty\)<\/td><td>Late departure<\/td>/);
+  assert.match(status.text, /<h3>Operations<\/h3>/);
+  assert.doesNotMatch(status.text, /Not applied|>Applied</);
+
   // The pilot approves in the Jetlog app, and the status page reads it.
   const [id] = s.fake.changes.keys();
-  s.fake.setChangeStatus(id, 'applied');
+  s.fake.approveChange(id);
   const after = await s.get(proposed.location);
   assert.match(after.text, /Status: applied/);
+  assert.match(after.text, />Applied</);
   assert.doesNotMatch(after.text, /Nothing changes until/);
 
   // Disconnect.
@@ -296,4 +303,76 @@ test('when Jetlog cannot be reached during the code exchange, the page says so',
   const home = await s.follow(callback);
   assert.match(home.text, /Jetlog could not be reached/);
   assert.equal(s.store.load(), null);
+});
+
+test('after a partial approval the status page says which operations were applied', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01'), makeEntry(2, '2026-10-02')];
+  await s.connectThroughPages('full');
+
+  const change = await s.api.proposeChanges({
+    summary: 'Two remarks',
+    operations: [
+      { op: 'update', resource: 'entry', id: 'entry-001', data: { remarks: 'one' } },
+      { op: 'update', resource: 'entry', id: 'entry-002', data: { remarks: 'two' } },
+    ],
+  });
+  s.fake.approveChange(change.id, { operationIndices: [0] });
+
+  const page = await s.get(`/changes/${change.id}`);
+  assert.match(page.text, /Status: applied/);
+  assert.match(page.text, /can approve only some of the operations/);
+  const rows = page.text.match(/<td>(Applied|Not applied)<\/td>/g);
+  assert.deepEqual(rows, ['<td>Applied</td>', '<td>Not applied</td>']);
+});
+
+test('the status page explains stale, failed and revoked', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+  const proposal = { summary: 'x', operations: [{ op: 'update', resource: 'entry', id: 'entry-001', data: { remarks: 'one' } }] };
+
+  const stale = await s.api.proposeChanges(proposal);
+  s.fake.setChangeStatus(stale.id, 'stale');
+  assert.match((await s.get(`/changes/${stale.id}`)).text, /changed after the proposal was made/);
+
+  const failed = await s.api.proposeChanges(proposal);
+  s.fake.setChangeStatus(failed.id, 'failed', { error: 'entry was removed' });
+  const failedPage = (await s.get(`/changes/${failed.id}`)).text;
+  assert.match(failedPage, /Applying the proposal failed/);
+  assert.match(failedPage, /Error from Jetlog: entry was removed/);
+
+  const revoked = await s.api.proposeChanges(proposal);
+  s.fake.setChangeStatus(revoked.id, 'revoked');
+  assert.match((await s.get(`/changes/${revoked.id}`)).text, /pilot disconnected this app/);
+});
+
+test('when Jetlog has not enabled the whole logbook, the quiet downgrade is explained with both reasons', async (t) => {
+  const s = await startSample(t);
+  s.fake.wholeLogbookEnabled = false;
+  // The pilot does not choose anything here: Jetlog narrows the request by itself.
+  await s.connectThroughPages('full');
+
+  assert.equal(s.store.load().scope, 'import');
+  const home = await s.get('/');
+  assert.match(home.text, /Connected, with less access than asked for/);
+  assert.match(home.text, /chose the lower level in the Jetlog app/);
+  assert.match(home.text, /has not enabled the whole logbook for this app, in which case Jetlog quietly grants own flights only and reports no error/);
+  assert.doesNotMatch(home.text, /<a href="\/logbook">/);
+});
+
+test('a proposal that changes nothing shows no change table', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+
+  const change = await s.api.proposeChanges({
+    summary: 'x',
+    operations: [{ op: 'update', resource: 'entry', id: 'entry-001', data: { remarks: 'one' } }],
+  });
+  s.fake.changes.get(change.id).preview[0].changed_fields = [];
+
+  const page = await s.get(`/changes/${change.id}`);
+  assert.doesNotMatch(page.text, /What it changes/);
+  assert.match(page.text, /<h3>Operations<\/h3>/);
 });

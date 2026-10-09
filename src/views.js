@@ -59,7 +59,7 @@ function flashBox({ kind, title, lines = [], items = [] }) {
 const connectForm = (heading) => html`
   <section>
     <h2>${heading}</h2>
-    <p>What should this app be allowed to do? The pilot makes the final choice in the Jetlog app and can always pick the lower level.</p>
+    <p>What should this app be allowed to do? The pilot makes the final choice in the Jetlog app and can always pick the lower level. Jetlog also decides per app whether it may ask for the whole logbook. If it may not, the request is quietly narrowed to own flights.</p>
     <form method="post" action="/connect">
       <div class="choice">
         <button name="access" value="own">Connect: ${ACCESS_LEVELS.own.label}</button>
@@ -173,7 +173,7 @@ function flightRow(flight, { canPropose }) {
   </tr>`;
 }
 
-export function logbookPage({ me, recent, canPropose, flash }) {
+export function logbookPage({ pilot, recent, canPropose, flash }) {
   return layout({
     title: 'Logbook, Jetlog Sample App',
     flash,
@@ -181,10 +181,10 @@ export function logbookPage({ me, recent, canPropose, flash }) {
     body: html`
       <section>
         <h2>Who is connected</h2>
-        <p>From <code>GET /api/partner/v1/me</code>.</p>
+        <p>From <code>GET /api/partner/v1/me</code>, which answers with ids only, and the person with that id in <code>GET /api/partner/v1/people</code>.</p>
         <table>
-          <tr><th>Email</th><td>${me.email ?? 'not shown'}</td></tr>
-          <tr><th>Pilot id</th><td><code>${me.user_id ?? 'not shown'}</code></td></tr>
+          <tr><th>Name</th><td>${pilot.name ?? 'Not in the people list'}</td></tr>
+          <tr><th>Pilot id</th><td><code>${pilot.userId ?? 'not shown'}</code></td></tr>
         </table>
       </section>
       <section>
@@ -212,6 +212,49 @@ export function proposalFlash() {
   };
 }
 
+// What the proposal changes, from the preview Jetlog sends: for every item the
+// fields in changed_fields, with their value before and after.
+function previewSection(preview) {
+  const items = (preview ?? []).filter((item) => (item.changed_fields ?? []).length > 0);
+  if (!items.length) return '';
+
+  const show = (value) => (value === null || value === undefined || value === '' ? '(empty)' : typeof value === 'object' ? JSON.stringify(value) : value);
+
+  return html`
+    <h3>What it changes</h3>
+    ${items.map((item) => {
+      const label = item.after?.flight_number ?? item.before?.flight_number ?? item.id;
+      return html`<table>
+        <tr><th colspan="3">${item.op} ${item.resource} ${label}</th></tr>
+        <tr><th>Field</th><th>Before</th><th>After</th></tr>
+        ${item.changed_fields.map(
+          (field) => html`<tr><td><code>${field}</code></td><td>${show(item.before?.[field])}</td><td>${show(item.after?.[field])}</td></tr>`,
+        )}
+      </table>`;
+    })}`;
+}
+
+// The operations as sent. Once a proposal is applied, every operation says
+// whether it was applied, because the pilot may approve only some of them.
+function operationsSection(operations) {
+  if (!operations?.length) return '';
+  const hasResult = operations.some((operation) => typeof operation.applied === 'boolean');
+
+  return html`
+    <h3>Operations</h3>
+    <table>
+      <tr><th>#</th><th>Operation</th><th>Id</th>${hasResult ? html`<th>Result</th>` : ''}</tr>
+      ${operations.map(
+        (operation, position) => html`<tr>
+          <td>${operation.index ?? position}</td>
+          <td>${operation.op} ${operation.resource}</td>
+          <td><code>${operation.id}</code></td>
+          ${hasResult ? html`<td>${operation.applied ? 'Applied' : 'Not applied'}</td>` : ''}
+        </tr>`,
+      )}
+    </table>`;
+}
+
 export function changePage({ change, flash }) {
   return layout({
     title: 'Proposal, Jetlog Sample App',
@@ -225,14 +268,18 @@ export function changePage({ change, flash }) {
           <strong>Status: ${change.status}</strong>
           <p>${describeChangeStatus(change.status)}</p>
           ${change.status === 'pending' ? html`<p>Nothing changes until the pilot approves it in the Jetlog app.</p>` : ''}
+          ${change.error ? html`<p>Error from Jetlog: ${change.error}</p>` : ''}
         </div>
         <table>
           <tr><th>Summary</th><td>${change.summary}</td></tr>
+          <tr><th>Made</th><td>${change.created_at ?? 'unknown'}</td></tr>
           <tr><th>Expires</th><td>${change.expires_at ?? 'unknown'}</td></tr>
+          <tr><th>Decided</th><td>${change.decided_at ?? 'not yet'}</td></tr>
           <tr><th>Counts</th><td><code>${JSON.stringify(change.counts ?? {})}</code></td></tr>
         </table>
+        ${previewSection(change.preview)}
+        ${operationsSection(change.operations)}
         <p><a href="/changes/${encodeURIComponent(change.id)}">Check again</a> or <a href="/logbook">go back to the logbook</a>.</p>
-        <details><summary>Operations as sent</summary><pre>${JSON.stringify(change.operations ?? [], null, 2)}</pre></details>
       </section>`,
   });
 }

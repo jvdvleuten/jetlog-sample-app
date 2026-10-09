@@ -45,13 +45,15 @@ The tokens of the one local user are kept in `tokens.json` next to the code. The
 
    Approving in the Jetlog app needs a current version of the app. An older version shows "Update Jetlog to approve this sign-in". Update the app and try again, or choose "Use email instead" at the bottom of the sign-in page. That page offers the same choice.
 
-4. **Back in the sample** the page says what was actually granted, in plain words. If you asked for the whole logbook and chose own flights only, it says the app got less than it asked for, and it hides what it cannot do.
+4. **Back in the sample** the page says what was actually granted, in plain words, from the `scope` in the token response. If you asked for the whole logbook and got less, it says so and hides what the app cannot do. There are two reasons this can happen: you chose own flights only in the Jetlog app, or Jetlog has not enabled the whole logbook for the app. The second one is no error. Jetlog narrows the request by itself and answers with `scope: "import"`, so always read the scope you got.
 
 5. **Add a flight.** Fill in a date, flight number, from and to, and press the button. The sample sends one flight to the import route and shows what Jetlog answered, including every `skipped` row and every warning. Send the same flight twice and Jetlog matches it instead of adding a second one.
 
-6. **The logbook page** (whole logbook only) shows who is connected and the newest flights.
+6. **The logbook page** (whole logbook only) shows who is connected and the newest flights. Jetlog answers `/me` with ids only, no name and no email. The sample looks up the person with `self_person_id` in the people list and shows that name, and says so when that person is not in the list. Flights come from `/entries`, oldest first, so the sample asks for the last 60 days and follows the pages to the end to find the newest.
 
-7. **Propose a change** (whole logbook only). Type new remarks on a flight and press Propose. Nothing changes in the logbook. Jetlog stores the proposal and notifies the pilot. Open the Jetlog app, review the change, and approve or reject it. The status page of the sample shows `pending`, and after you decided in the app it shows `applied` or `rejected`. A proposal can also end as `expired`, `stale`, `failed` or `revoked`.
+7. **Propose a change** (whole logbook only). Type new remarks on a flight and press Propose. Nothing changes in the logbook. Jetlog stores the proposal and notifies the pilot. Open the Jetlog app, review the change, and approve or reject it. The status page of the sample shows `pending`, the fields the proposal changes with their value before and after, and the operations. After you decided in the app it shows `applied` or `rejected`.
+
+   A pilot can approve only some of the operations of a proposal. Once a proposal is `applied`, every operation says whether it was applied, and the sample shows that. A proposal can also end as `expired` (nobody decided within 24 hours), `stale` (something it touches changed after it was made, nothing was applied), `failed` (applying it failed) or `revoked` (the pilot disconnected the app).
 
 8. **Refresh and disconnect.** "Refresh the token now" exists only to show a refresh. The sample refreshes by itself a minute before the access token expires, and when Jetlog answers 401. "Disconnect" revokes the refresh token at Jetlog and deletes the stored tokens.
 
@@ -63,7 +65,7 @@ The tokens of the one local user are kept in `tokens.json` next to the code. The
 | 2. Callback: state, iss, `error=`, code exchange | `handleCallback` | `src/connect.js`, `src/token-endpoint.js` |
 | 3. What was granted, in plain words | `describeGrant` | `src/plain-words.js` |
 | 4. Import a flight | `buildImportPayload`, `importFlights` | `src/jetlog-api.js` |
-| 5. Who is connected, recent flights | `getMe`, `listRecentFlights` | `src/jetlog-api.js` |
+| 5. Who is connected, recent flights | `getPilot` (with `getMe` and `getPeople`), `listRecentFlights` | `src/jetlog-api.js` |
 | 6. Propose a change, read its status | `buildRemarksProposal`, `proposeChanges`, `getChange` | `src/jetlog-api.js` |
 | 7. Tokens: refresh before expiry and on 401, one refresh at a time | `getAccessToken`, `refreshTokens`, `callWithToken` | `src/token-manager.js` |
 | 8. Disconnect | `disconnect` | `src/token-manager.js` |
@@ -85,7 +87,7 @@ Run the tests with `npm test`. They start a small fake Jetlog on a local port, s
 
 1. **Host a metadata document** on your own domain. Its URL is your `client_id`. Copy `docs/client.json`, and use your own name and redirect addresses. It has to be served over https on port 443 with a valid certificate, answer `200` without redirects, and its `client_id` has to equal the URL it is served from. The `client_name` is at most 64 printable ASCII characters. Every redirect address is https, except `127.0.0.1`, `localhost` and `[::1]`, which are allowed for development on your own computer. Jetlog keeps a copy for 24 hours, so publish a change at least a day before you rely on it.
 
-2. **Register the URL.** Send the URL of your metadata document to support@jetlog.app, together with the name pilots should see. Until Jetlog has registered it, an authorization request comes back to your callback with `error=unauthorized_client`. If your app needs to read the logbook or propose changes, say so in the same mail. Jetlog decides per app whether it may ask for the whole logbook, and an app without that is only ever offered own flights.
+2. **Register the URL.** Send the URL of your metadata document to support@jetlog.app, together with the name pilots should see. Until Jetlog has registered it, an authorization request comes back to your callback with `error=unauthorized_client`. If your app needs to read the logbook or propose changes, say so in the same mail. Jetlog decides per app whether it may ask for the whole logbook. For an app without that, a request for it is not an error: Jetlog narrows it to own flights and the token response says `scope: "import"`.
 
 3. **Use your own values.** Set `JETLOG_CLIENT_ID` to your URL, and make `redirectUri` in `src/config.js` one of the redirect addresses in your document, character for character.
 
@@ -99,6 +101,7 @@ The guide to the token flow, the import payload and the errors is in [JetlogAPI]
 
 * An import takes at most 200 entries and 1000 people per request. Include the `people` the entries refer to in the same request.
 * A proposal holds at most 200 operations, expires after 24 hours, and a pilot can have at most 20 open proposals.
+* A proposal cannot touch files, photos, signatures or signing links. Jetlog refuses it with a 403 `insufficient_scope`, whatever the pilot would approve. The read routes send no signature, attachment or photo fields either.
 * An access token lasts one hour. A refresh token lasts 90 days from the moment it is issued and is replaced on every refresh. A pilot who does not use your app for 90 days connects again.
 * An authorization code is valid for 60 seconds and works once.
 * Jetlog can answer `429` with a `Retry-After` header. Wait that many seconds, then send the same request again.

@@ -34,12 +34,13 @@ export class NetworkError extends Error {
 // the proposal routes nest the error as {"error":{"message","code","errors"}}.
 // Both are read here so the rest of the sample does not care.
 export class JetlogApiError extends Error {
-  constructor({ status, code, message, retryAfter = null, fieldErrors = [], body = null }) {
+  constructor({ status, code, message, retryAfter = null, fieldErrors = [], missingScopes = [], body = null }) {
     super(message || code || `Jetlog answered ${status}`);
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
     this.fieldErrors = fieldErrors;
+    this.missingScopes = missingScopes;
     this.body = body;
   }
 
@@ -52,6 +53,7 @@ export class JetlogApiError extends Error {
       message: nested ? error.message : body?.message,
       retryAfter,
       fieldErrors: nested && Array.isArray(error.errors) ? error.errors : [],
+      missingScopes: Array.isArray(body?.missing_scopes) ? body.missing_scopes : [],
       body,
     });
   }
@@ -104,6 +106,21 @@ function explainApiError(err, context) {
     };
   }
 
+  // A proposal that touches files, photos, signatures or signing links is refused
+  // for every connected app. The body names what is missing.
+  if (status === 403 && code === 'insufficient_scope' && err.missingScopes.length > 0) {
+    const refused = [
+      err.missingScopes.includes('files') ? 'files and photos' : null,
+      err.missingScopes.includes('signatures') ? 'signatures and signing links' : null,
+    ].filter(Boolean);
+    return {
+      title: 'Connected apps cannot change that',
+      lines: [
+        `A proposal may not touch ${refused.join(' or ') || err.missingScopes.join(' or ')}. Jetlog refuses this for every connected app, whatever the pilot would approve. Nothing was changed.`,
+        'Remove those operations and propose the rest.',
+      ],
+    };
+  }
   if (status === 403 && code === 'insufficient_scope') {
     return {
       title: 'This connection does not allow that',

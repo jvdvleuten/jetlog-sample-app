@@ -297,3 +297,21 @@ test('own flights asked and granted is plain own flights', () => {
   assert.equal(grant.headline, 'Own flights only');
   assert.match(grant.summary, /cannot read your logbook/);
 });
+
+test('when Jetlog has not enabled the whole logbook for the app, the request is narrowed without an error', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  h.fake.wholeLogbookEnabled = false;
+
+  // The sample asks for everything, Jetlog answers scope "import", and that is no failure.
+  const outcome = await h.connect('full');
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.tokens.requestedScope, 'import read write');
+  assert.equal(outcome.tokens.scope, 'import');
+
+  const grant = describeGrant({ requested: outcome.tokens.requestedScope, granted: outcome.tokens.scope });
+  assert.equal(grant.downgraded, true);
+  assert.match(grant.downgradeNote, /chose the lower level/);
+  assert.match(grant.downgradeNote, /has not enabled the whole logbook for this app, in which case Jetlog quietly grants own flights only and reports no error/);
+  assert.match(grant.downgradeNote, /asking again gives the same result/);
+});

@@ -41,9 +41,26 @@ export function createJetlogApi({ config, tokens, now = Date.now }) {
     return { skipped: [], warnings: [], ...body };
   }
 
-  // 5. Who is connected. Needs `read`.
+  // 5. Who is connected. Needs `read`. Jetlog answers with ids only:
+  // { user_id, self_person_id }. There is no name and no email.
   function getMe() {
     return call('GET', '/me');
+  }
+
+  // 5. The people of the logbook. Needs `read`.
+  async function getPeople() {
+    const body = await call('GET', '/people');
+    return body.people ?? [];
+  }
+
+  // 5. The pilot behind the connection. The name is the person that /me points at
+  // (self_person_id), found in the people list. When that person is not in the
+  // list, there is no name to show and `name` is null.
+  async function getPilot() {
+    const [me, people] = await Promise.all([getMe(), getPeople()]);
+    const self = people.find((person) => person.id === me.self_person_id);
+    const name = self ? [self.first_name, self.last_name].filter(Boolean).join(' ') : '';
+    return { userId: me.user_id, selfPersonId: me.self_person_id, name: name || null };
   }
 
   // 5. The newest flights. Needs `read`.
@@ -79,7 +96,7 @@ export function createJetlogApi({ config, tokens, now = Date.now }) {
     return requirePendingChange(body);
   }
 
-  return { importFlights, getMe, listRecentFlights, proposeChanges, getChange };
+  return { importFlights, getMe, getPeople, getPilot, listRecentFlights, proposeChanges, getChange };
 }
 
 function requirePendingChange(body) {
