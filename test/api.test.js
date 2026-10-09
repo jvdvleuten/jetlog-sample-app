@@ -534,18 +534,87 @@ test('an unknown key is refused by name, and nothing else of the operation is dr
   assert.equal(h.fake.changes.size, 0);
 });
 
-test('a time on a flight that follows the flight feed is refused, with the reason', async (t) => {
+const FEED_REFUSAL =
+  'Jetlog would show a different value than the one proposed for this flight, because the flight follows the flight feed, so connected apps cannot propose it';
+const OTHER_REFUSAL = 'Jetlog would show a different value than the one proposed for this flight, so connected apps cannot propose it';
+
+test('a time on a flight that follows the flight feed is refused when the logbook would show another value', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: true, derived: { date: '2026-09-01', from: 'EHAM', to: 'EGLL', off_blocks: '10:05' } })];
+
+  const err = await failure(propose(h, update({ off_blocks: '10:10' })));
+  assert.equal(err.status, 422);
+  assert.deepEqual(err.fieldErrors, [{ field: 'off_blocks', index: 0, message: FEED_REFUSAL }]);
+  assert.equal(explainError(err).lines[0], `Operation 1: ${FEED_REFUSAL}`);
+  assert.equal(h.fake.changes.size, 0);
+});
+
+test('the feed keys of a tracked flight each get the feed sentence', async (t) => {
   const h = await setup();
   t.after(h.cleanup);
   await h.connect('full');
   h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: true })];
 
-  const err = await failure(propose(h, update({ off_blocks: '10:05' })));
-  assert.equal(err.status, 422);
-  assert.match(
-    explainError(err).lines[0],
-    /^Operation 1: off_blocks would change nothing you can see in the logbook for this flight \(it follows the flight feed\), so connected apps cannot propose it$/,
+  const err = await failure(propose(h, update({ date: '2026-09-02', from: 'EHRD', to: 'EDDF', registration: 'PHBXD', airborne: '10:20', touchdown: '11:20', on_blocks: '11:30' })));
+  assert.deepEqual(
+    err.fieldErrors.map((error) => error.field),
+    ['date', 'from', 'to', 'registration', 'airborne', 'touchdown', 'on_blocks'],
   );
+  assert.ok(err.fieldErrors.every((error) => error.message === FEED_REFUSAL));
+});
+
+test('a proposal that repeats the value already shown is accepted, also on a tracked flight', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: true, derived: { date: '2026-09-01', from: 'EHAM', to: 'EGLL', off_blocks: '10:05' } })];
+
+  // The airport code is cleaned (upper-cased) before it is compared.
+  const change = await propose(h, update({ off_blocks: '10:05', from: 'eham' }));
+  assert.equal(change.status, 'pending');
+  assert.deepEqual(change.preview[0].changed_fields, ['off_blocks', 'from']);
+});
+
+test('values are cleaned before they are compared, so a lower case airport code or a registration with a dash is fine', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: false })];
+
+  const change = await propose(h, update({ from: ' ehrd ', registration: 'ph-bxd', remarks: '  Late  ' }));
+  assert.equal(change.status, 'pending');
+  assert.deepEqual(change.preview[0].changed_fields, ['from', 'registration', 'remarks']);
+});
+
+test('any other mismatch gets the shorter sentence, and a person says person', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: false })];
+  // Jetlog would show something else for this key, for a reason that is not the flight feed.
+  h.fake.shownValue = (resource, target, key, proposed) => (key === 'remarks' || key === 'first_name' ? `${proposed} (changed)` : proposed);
+
+  const flight = await failure(propose(h, update({ remarks: 'Late' })));
+  assert.equal(explainError(flight).lines[0], `Operation 1: ${OTHER_REFUSAL}`);
+
+  const person = await failure(propose(h, { op: 'update', resource: 'person', id: 'user-1', data: { first_name: 'Anne' } }));
+  assert.equal(
+    explainError(person).lines[0],
+    'Operation 1: Jetlog would show a different value than the one proposed for this person, so connected apps cannot propose it',
+  );
+  assert.equal(person.fieldErrors[0].field, 'first_name');
+});
+
+test('two operations on the same flight in one proposal are refused', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const err = await failure(h.api.proposeChanges({ summary: 'x', operations: [update({ remarks: 'a' }), update({ remarks: 'b' })] }));
+  assert.match(explainError(err).lines[0], /^Operation 2: duplicate entry id entry-001/);
 });
 
 test('the same time is accepted on a flight that is not tracked', async (t) => {

@@ -142,7 +142,7 @@ function explainAuthorizationError(query, config) {
   if (query.error === 'unauthorized_client') {
     return failure('unauthorized_client', 'Jetlog does not know this app', [
       `The client ID ${config.clientId} is not registered with Jetlog, or its registration is switched off.`,
-      'To register your own app, email the URL of your metadata document to support@jetlog.app.',
+      'Register your own app in the developer console at https://jetlog.app/developers. Until Jetlog has approved it, this is the answer you get. Write to support@jetlog.app when something looks wrong.',
     ]);
   }
   return failure('authorization_error', `Jetlog answered ${query.error}`, [

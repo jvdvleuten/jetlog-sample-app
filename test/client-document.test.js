@@ -30,3 +30,9 @@ test('the redirect addresses are https or loopback, and include the one the samp
   assert.deepEqual(document.redirect_uris, ['http://127.0.0.1:8787/callback', 'http://localhost:8787/callback']);
   assert.ok(document.redirect_uris.includes(loadConfig({}).redirectUri));
 });
+
+test('the sample document has no jetlog_developer field, because Jetlog registered the sample itself', () => {
+  // A developer's own document needs the verification value from the console. The
+  // sample is the exception, so nothing here may start to require the field.
+  assert.equal('jetlog_developer' in document, false);
+});

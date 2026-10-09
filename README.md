@@ -23,7 +23,7 @@ You need Node.js 20 or later, and the Jetlog app on an iPhone or iPad with a log
 
 3. Open http://127.0.0.1:8787 in your browser. Use that address and not `localhost`, because the sample only listens on 127.0.0.1.
 
-The sample is registered with Jetlog as "Jetlog Sample App", so it works against https://jetlog.app as it is. You can change three settings with environment variables:
+Jetlog itself registered the sample as "Jetlog Sample App", so it works against https://jetlog.app as it is. You can change three settings with environment variables:
 
 | Variable | Default | Meaning |
 | :-- | :-- | :-- |
@@ -31,7 +31,7 @@ The sample is registered with Jetlog as "Jetlog Sample App", so it works against
 | `JETLOG_CLIENT_ID` | `https://jvdvleuten.github.io/jetlog-sample-app/client.json` | The URL of the metadata document that identifies the app |
 | `PORT` | `8787` | The port the sample listens on |
 
-The redirect address is always `http://127.0.0.1:<PORT>/callback`. The registered sample only lists port 8787, so with another port Jetlog shows an error page instead of sending you back. Your own app lists its own redirect addresses, see "Make it your own" below.
+The redirect address is always `http://127.0.0.1:<PORT>/callback`. The approved redirect addresses of the sample only list port 8787, so with another port Jetlog shows an error page instead of sending you back. Your own app lists its own redirect addresses, see "Make it your own" below.
 
 The tokens of the one local user are kept in `tokens.json` next to the code. The file is ignored by git. A real app does not do this: it keeps one record per pilot, with the refresh token in encrypted storage. Press Disconnect to start over. That also ends the connection at Jetlog, which deleting the file does not.
 
@@ -85,15 +85,29 @@ Run the tests with `npm test`. They start a small fake Jetlog on a local port, s
 
 ## Make it your own
 
-1. **Host a metadata document** on your own domain. Its URL is your `client_id`. Copy `docs/client.json`, and use your own name and redirect addresses. It has to be served over https on port 443 with a valid certificate, answer `200` without redirects, and its `client_id` has to equal the URL it is served from. The `client_name` is at most 64 printable ASCII characters. Every redirect address is https, except `127.0.0.1`, `localhost` and `[::1]`, which are allowed for development on your own computer. Jetlog keeps a copy for 24 hours, so publish a change at least a day before you rely on it.
+1. **Host a metadata document** on your own domain. Its URL is your `client_id`. Copy `docs/client.json` and use your own name and redirect addresses. It has to be served over https on port 443 with a valid certificate, answer `200` without redirects, and its `client_id` has to equal the URL it is served from. Every redirect address is https, except `127.0.0.1`, `localhost` and `[::1]`, which are allowed for development on your own computer. Jetlog keeps a copy for 24 hours, so publish a change at least a day before you rely on it.
 
-2. **Register the URL.** Send the URL of your metadata document to support@jetlog.app, together with the name pilots should see. Until Jetlog has registered it, an authorization request comes back to your callback with `error=unauthorized_client`. If your app needs to read the logbook or propose changes, say so in the same mail. Jetlog decides per app whether it may ask for the whole logbook. For an app without that, a request for it is not an error: Jetlog narrows it to own flights and the token response says `scope: "import"`.
+   Your document also needs a `"jetlog_developer"` field, with the verification value that the console gives you in the next step. The sample's own `docs/client.json` has no such field, because Jetlog registered the sample itself. A document of your own needs it.
 
-3. **Use your own values.** Set `JETLOG_CLIENT_ID` to your URL, and make `redirectUri` in `src/config.js` one of the redirect addresses in your document, character for character.
+2. **Register your app in the developer console.** Read about it at https://jetlog.app/developers and open the console at https://jetlog.app/developers/console.
 
-4. **Pick the right redirect.** A server uses an ordinary https callback on your domain. A phone app uses an https link that the app has claimed (a universal link on iOS, an App Link on Android) and runs the sign-in in the system browser, not in a web view. A custom scheme such as `myapp://callback` is not accepted, because on iOS any app can register the same scheme and receive your authorization code.
+   * Sign in with the email address of your Jetlog account. The console mails you a code. You need a Jetlog account, because the console does not create one.
+   * The console shows a verification value that starts with `jld_`. Put it in your metadata document as `"jetlog_developer"`. It is the same for every app you register. It is not a secret and not a key, it only shows that the document is yours. Jetlog checks it when you submit and again when it approves the app.
+   * Fill in the name pilots will see and the address of your document. The name is at most 64 printable ASCII characters. It cannot contain "Jetlog", cannot contain `/ : @ < >` and cannot start with `www.`. The sample is called "Jetlog Sample App" only because Jetlog registered it itself.
+   * Press "Check document". It fetches your document and lists every problem in plain words. Submitting runs the same check.
+   * Submit and wait. Jetlog reviews every app and emails you the decision. Until the app is approved, an authorization request for it comes back to your callback with `error=unauthorized_client`.
 
-5. **Store tokens properly.** One record per pilot. The refresh token goes in encrypted storage: the Keychain on iOS, the Keystore on Android, encrypted storage on a server. Keep tokens out of logs and URLs. If you have a phone app and a server, one of them holds the refresh token. Do not copy it to a second place, because the first refresh in either place makes the other copy useless.
+   After you have submitted, the name and the address cannot be changed. Register a new app, or write to support@jetlog.app. You can have at most 5 apps, and register at most 5 per day.
+
+3. **Ask for the whole logbook if you need it.** Every approved app can add flights and change the flights it added. Reading the logbook and proposing changes is a second level that Jetlog switches on per app. You ask for it on the app's page in the console, with a short reason, once the app is approved. Jetlog decides and mails you. For an app without it, a request for the whole logbook is not an error: Jetlog narrows it to own flights and the token response says `scope: "import"`.
+
+   The redirect addresses in your document at the moment of approval are the approved ones. Adding or changing one later does not take effect until Jetlog has approved it, so write to support@jetlog.app. An authorization request with an address that is not approved gets the Jetlog error page.
+
+4. **Use your own values.** Set `JETLOG_CLIENT_ID` to your URL, and make `redirectUri` in `src/config.js` one of the approved redirect addresses, character for character.
+
+5. **Pick the right redirect.** A server uses an ordinary https callback on your domain. A phone app uses an https link that the app has claimed (a universal link on iOS, an App Link on Android) and runs the sign-in in the system browser, not in a web view. A custom scheme such as `myapp://callback` is not accepted, because on iOS any app can register the same scheme and receive your authorization code.
+
+6. **Store tokens properly.** One record per pilot. The refresh token goes in encrypted storage: the Keychain on iOS, the Keystore on Android, encrypted storage on a server. Keep tokens out of logs and URLs. If you have a phone app and a server, one of them holds the refresh token. Do not copy it to a second place, because the first refresh in either place makes the other copy useless.
 
 The guide to the token flow, the import payload and the errors is in [JetlogAPI](https://github.com/jvdvleuten/JetlogAPI).
 
@@ -102,7 +116,8 @@ The guide to the token flow, the import payload and the errors is in [JetlogAPI]
 * An import takes at most 200 entries and 1000 people per request. Include the `people` the entries refer to in the same request.
 * A request body is at most 2 MB for an import and 256 KB for a proposal. Larger answers `413` with `{"error":"payload_too_large","max_bytes":...}`.
 * A proposal holds at most 200 operations and expires after 24 hours. One connection can have at most 5 open proposals.
-* A proposal may only hold the resources `entry` and `person`, and only a short list of fields, and only when the pilot would see the change. For a flight the fields are `type`, `flight_number`, `date`, `registration`, `from`, `to`, `off_blocks`, `airborne`, `touchdown`, `on_blocks`, `remarks`, `people` and `is_deleted`. On a flight that Jetlog tracks, the times and registration follow the flight feed, so a proposal for them is refused. For a person they are `first_name`, `last_name`, `default_role`, `employee_number`, `is_imported_from_other_logbook` and `is_deleted`. A new flight has `type: "flight"`. A flight can be proposed on only when it is not deleted and not a simulator session. Anything else is a `422` that names the field and the reason in plain words, and the sample shows Jetlog's own sentence.
+* A proposal may only hold the resources `entry` and `person`, and only a short list of fields. For a flight the fields are `type`, `flight_number`, `date`, `registration`, `from`, `to`, `off_blocks`, `airborne`, `touchdown`, `on_blocks`, `remarks`, `people` and `is_deleted`. For a person they are `first_name`, `last_name`, `default_role`, `employee_number`, `is_imported_from_other_logbook` and `is_deleted`. A new flight has `type: "flight"`. A flight can be proposed on only when it is not deleted and not a simulator session. Two operations on the same id in one proposal are refused.
+* The rule behind that list: after the pilot approves, the logbook must show exactly the value the app proposed, or Jetlog refuses the proposal. Repeating a value that is already there is accepted. On a flight that follows the flight feed, the feed decides the date, route, registration and times, so a proposal for those is refused unless it repeats what the logbook shows. A refusal is a `422` that names the field, and the sample shows Jetlog's own sentence.
 * A proposal cannot touch files, photos, signatures or signing links. Jetlog refuses it with a 403 `insufficient_scope`, whatever the pilot would approve. The read routes send no signature, attachment or photo fields either.
 * An access token lasts one hour. A refresh token lasts 90 days from the moment it is issued and is replaced on every refresh. A pilot who does not use your app for 90 days connects again.
 * An authorization code is valid for 60 seconds and works once.

@@ -81,6 +81,11 @@ export async function startFakeJetlog() {
     ],
     entries: [],
     maxPageSize: 200,
+    // What the logbook would show for a key after a proposal is approved. The default
+    // is the proposed value, except on a flight that follows the flight feed, where
+    // the feed decides the keys in FEED_KEYS. A test can replace it to make Jetlog
+    // show something else.
+    shownValue: null,
     // Open proposals allowed for this connection.
     openProposalCap: 5,
     // Called for every request that reaches an API route, after the token is accepted.
@@ -375,12 +380,31 @@ export async function startFakeJetlog() {
   // pilot is shown a before and after value for.
   const ENTRY_KEYS = ['type', 'flight_number', 'date', 'registration', 'from', 'to', 'off_blocks', 'airborne', 'touchdown', 'on_blocks', 'remarks', 'people', 'is_deleted'];
   const PERSON_KEYS = ['first_name', 'last_name', 'default_role', 'employee_number', 'is_imported_from_other_logbook', 'is_deleted'];
-  // On a flight that Jetlog tracks, these follow the flight feed.
-  const FEED_KEYS = ['registration', 'off_blocks', 'airborne', 'touchdown', 'on_blocks'];
+  // On a flight that follows the flight feed, the feed decides these.
+  const FEED_KEYS = ['date', 'from', 'to', 'registration', 'off_blocks', 'airborne', 'touchdown', 'on_blocks'];
+
+  // The usual cleaning before a value is compared: registration cleaned, airport
+  // codes upper-cased, text trimmed.
+  function clean(key, value) {
+    if (typeof value !== 'string') return value;
+    if (key === 'registration') return value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (key === 'from' || key === 'to') return value.trim().toUpperCase();
+    return value.trim();
+  }
+
+  // The value the logbook would show for this key once the proposal is approved.
+  function shownAfter(resource, target, key, proposed) {
+    if (fake.shownValue) return fake.shownValue(resource, target, key, proposed);
+    if (resource === 'entry' && target.update_flight_data === true && FEED_KEYS.includes(key)) {
+      return target.derived?.[key] ?? null;
+    }
+    return clean(key, proposed);
+  }
 
   function proposalErrors(operations) {
     const errors = [];
     const refuse = (index, field, message) => errors.push({ field, index, message });
+    const seen = new Set();
 
     for (const [index, operation] of operations.entries()) {
       if (!['create', 'update', 'delete'].includes(operation.op)) {
@@ -390,6 +414,12 @@ export async function startFakeJetlog() {
       if (!['entry', 'person'].includes(operation.resource)) {
         refuse(index, 'resource', `connected apps cannot propose changes to ${operation.resource}`);
         continue;
+      }
+
+      if (operation.id) {
+        const key = `${operation.resource}:${operation.id}`;
+        if (seen.has(key)) refuse(index, 'id', `duplicate ${operation.resource} id ${operation.id} within this proposal`);
+        seen.add(key);
       }
 
       const data = operation.data ?? {};
@@ -414,17 +444,29 @@ export async function startFakeJetlog() {
         refuse(index, 'id', 'required for update/delete');
         continue;
       }
-      if (operation.resource === 'entry') {
-        const target = fake.entries.find((row) => row.id === operation.id && !row.is_deleted && row.type === 'flight');
-        if (!target) {
-          refuse(index, 'id', `entry ${operation.id} not found`);
-        } else if (target.update_flight_data === true) {
-          for (const key of Object.keys(data).filter((candidate) => FEED_KEYS.includes(candidate))) {
-            refuse(index, key, `${key} would change nothing you can see in the logbook for this flight (it follows the flight feed), so connected apps cannot propose it`);
-          }
-        }
-      } else if (!fake.people.some((person) => person.id === operation.id)) {
-        refuse(index, 'id', `person ${operation.id} not found`);
+
+      const target =
+        operation.resource === 'entry'
+          ? fake.entries.find((row) => row.id === operation.id && !row.is_deleted && row.type === 'flight')
+          : fake.people.find((person) => person.id === operation.id);
+      if (!target) {
+        refuse(index, 'id', `${operation.resource} ${operation.id} not found`);
+        continue;
+      }
+
+      // The rule: after approval the logbook must show exactly the value proposed.
+      // Repeating a value that is already there is fine.
+      const word = operation.resource === 'entry' ? 'flight' : 'person';
+      for (const key of Object.keys(data).filter((candidate) => allowed.includes(candidate) && candidate !== 'type' && candidate !== 'people')) {
+        if (shownAfter(operation.resource, target, key, data[key]) === clean(key, data[key])) continue;
+        const feed = operation.resource === 'entry' && target.update_flight_data === true && FEED_KEYS.includes(key);
+        refuse(
+          index,
+          key,
+          feed
+            ? `Jetlog would show a different value than the one proposed for this ${word}, because the flight follows the flight feed, so connected apps cannot propose it`
+            : `Jetlog would show a different value than the one proposed for this ${word}, so connected apps cannot propose it`,
+        );
       }
     }
     return errors;

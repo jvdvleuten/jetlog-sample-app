@@ -188,6 +188,7 @@ test('error=unauthorized_client explains that the app is not registered', async 
 
   assert.equal(outcome.code, 'unauthorized_client');
   assert.ok(outcome.lines.join(' ').includes('https://app.example/client.json'));
+  assert.ok(outcome.lines.join(' ').includes('https://jetlog.app/developers'));
   assert.ok(outcome.lines.join(' ').includes('support@jetlog.app'));
   assert.equal(h.store.load(), null);
 });
