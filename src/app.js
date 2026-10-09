@@ -6,7 +6,15 @@ import { explainError } from './errors.js';
 import { buildImportPayload, buildRemarksProposal, createJetlogApi, MAX_REMARKS_LENGTH } from './jetlog-api.js';
 import { describeGrant } from './plain-words.js';
 import { createTokenManager } from './token-manager.js';
-import { changePage, homePage, importResultFlash, logbookPage, notFoundPage, proposalFlash } from './views.js';
+import {
+  changePage,
+  changeUnavailablePage,
+  homePage,
+  importResultFlash,
+  logbookPage,
+  notFoundPage,
+  proposalFlash,
+} from './views.js';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -114,7 +122,9 @@ export function createApp({ config, store, now = Date.now }) {
       redirect(res, `/changes/${encodeURIComponent(change.id)}`);
     } catch (err) {
       flash = err instanceof HttpError ? { kind: 'error', title: err.message } : errorFlash(err);
-      redirect(res, '/logbook');
+      // When Jetlog ended the connection (for example the pilot removed the app a
+      // moment ago), the tokens are gone and the pilot goes home to connect again.
+      redirect(res, store.load() ? '/logbook' : '/');
     }
   }
 
@@ -124,7 +134,13 @@ export function createApp({ config, store, now = Date.now }) {
       sendHtml(res, changePage({ change, flash: takeFlash() }));
     } catch (err) {
       flash = errorFlash(err);
-      redirect(res, '/logbook');
+      if (!store.load()) {
+        redirect(res, '/');
+        return;
+      }
+      // Stay on the proposal. This page does not refresh by itself, so a 429 from the
+      // status poll is shown with its wait, and the pilot decides when to check again.
+      sendHtml(res, changeUnavailablePage({ id, flash: takeFlash() }));
     }
   }
 

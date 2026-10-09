@@ -5,6 +5,7 @@ import { request as httpRequest, createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { test } from 'node:test';
 import { createApp } from '../src/app.js';
+import { logbookPage } from '../src/views.js';
 import { makeEntry } from '../test-support/fake-jetlog.js';
 import { setup } from '../test-support/harness.js';
 
@@ -375,4 +376,129 @@ test('a proposal that changes nothing shows no change table', async (t) => {
   const page = await s.get(`/changes/${change.id}`);
   assert.doesNotMatch(page.text, /What it changes/);
   assert.match(page.text, /<h3>Operations<\/h3>/);
+});
+
+test('the logbook marks the flights this app added, and offers a proposal only for the others', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [
+    makeEntry(1, '2026-10-01', { flight_number: 'KL1001', is_own: true }),
+    makeEntry(2, '2026-10-02', { flight_number: 'KL1002', is_own: false }),
+    makeEntry(3, '2026-10-03', { flight_number: 'SIM1', type: 'fstd' }),
+  ];
+  await s.connectThroughPages('full');
+
+  const page = await s.get('/logbook');
+  const rows = page.text.split('<tr>').filter((row) => /KL100\d/.test(row));
+  const own = rows.find((row) => row.includes('KL1001'));
+  const other = rows.find((row) => row.includes('KL1002'));
+
+  assert.match(own, /This app/);
+  assert.match(own, /Change it with the <a href="\/">import form<\/a>/);
+  assert.doesNotMatch(own, /action="\/propose"/);
+
+  assert.match(other, /Not this app/);
+  assert.match(other, /Propose a change/);
+  assert.match(other, /name="entryId" value="entry-002"/);
+
+  // Simulator sessions cannot be proposed on, so the sample does not ask for them.
+  assert.equal(s.fake.requestsTo('/api/partner/v1/entries')[0].query.type, 'flight');
+  assert.doesNotMatch(page.text, /SIM1/);
+});
+
+test('a refusal of a proposal shows Jetlog own words on the logbook page', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+
+  // The flight is deleted after the page was drawn.
+  s.fake.entries[0].is_deleted = true;
+  const proposed = await s.post('/propose', { entryId: 'entry-001', label: 'KL1', remarks: 'Late' });
+  const page = await s.follow(proposed);
+
+  assert.equal(proposed.location, '/logbook');
+  assert.match(page.text, /Jetlog rejected the proposal/);
+  assert.match(page.text, /Operation 1: entry entry-001 not found/);
+});
+
+test('a 429 on the status poll stays on the proposal page and shows the wait', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+  const change = await s.api.proposeChanges({
+    summary: 'x',
+    operations: [{ op: 'update', resource: 'entry', id: 'entry-001', data: { remarks: 'one' } }],
+  });
+
+  s.fake.respondOnce('GET', `/api/partner/v1/changes/${change.id}`, { status: 429, headers: { 'Retry-After': '9' }, body: { error: 'rate_limited', retry_after: 9 } });
+  const page = await s.get(`/changes/${change.id}`);
+
+  assert.equal(page.status, 200);
+  assert.match(page.text, /Too many requests/);
+  assert.match(page.text, /wait 9 seconds/);
+  assert.match(page.text, /The status could not be read right now/);
+  assert.match(page.text, new RegExp(`href="/changes/${change.id}">Check again`));
+  // The page does not poll by itself: one request, no loop.
+  assert.equal(s.fake.requestsTo(`/api/partner/v1/changes/${change.id}`).length, 1);
+
+  // Checking again after the wait works.
+  assert.match((await s.get(`/changes/${change.id}`)).text, /Status: pending/);
+});
+
+test('a proposal right after the pilot removed the app ends on the not connected page, without a loop', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+
+  s.fake.pilotRemovesApp();
+  const proposed = await s.post('/propose', { entryId: 'entry-001', label: 'KL1', remarks: 'Late' });
+
+  // Straight home, not back to the logbook (which would need the tokens that are gone).
+  assert.equal(proposed.status, 303);
+  assert.equal(proposed.location, '/');
+  const home = await s.follow(proposed);
+  assert.match(home.text, /The connection with Jetlog ended/);
+  assert.match(home.text, /Connect: Whole logbook/);
+  assert.doesNotMatch(home.text, /Add a flight/);
+  assert.equal(s.store.load(), null);
+
+  // One proposal request, one refresh, and nothing after that.
+  assert.equal(s.fake.requestsTo('/api/partner/v1/changes').length, 1);
+  assert.equal(s.fake.refreshCalls, 1);
+  assert.equal(s.fake.changes.size, 0);
+});
+
+test('the status page of a proposal after the pilot removed the app also goes home', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+  const change = await s.api.proposeChanges({
+    summary: 'x',
+    operations: [{ op: 'update', resource: 'entry', id: 'entry-001', data: { remarks: 'one' } }],
+  });
+
+  s.fake.pilotRemovesApp();
+  const page = await s.get(`/changes/${change.id}`);
+  assert.equal(page.status, 303);
+  assert.equal(page.location, '/');
+  assert.equal(s.fake.refreshCalls, 1);
+});
+
+test('a proposal that is too big or refused for files shows its sentence on the logbook page', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+
+  s.fake.respondOnce('POST', '/api/partner/v1/changes', { status: 413, body: { error: 'payload_too_large', max_bytes: 262144 } });
+  const proposed = await s.post('/propose', { entryId: 'entry-001', label: 'KL1', remarks: 'Late' });
+  const page = await s.follow(proposed);
+  assert.match(page.text, /The request body is too big/);
+  assert.match(page.text, /at most 256 KB/);
+});
+
+test('without the write scope the logbook page offers no proposal form and says why', () => {
+  const recent = { flights: [makeEntry(2, '2026-10-02', { is_own: false })], loaded: 1, incomplete: false };
+  const page = String(logbookPage({ pilot: { name: 'Anna de Vries', userId: 'user-1' }, recent, canPropose: false }));
+
+  assert.doesNotMatch(page, /action="\/propose"/);
+  assert.match(page, /needs the scope <code>write<\/code>/);
 });

@@ -153,23 +153,29 @@ export const flightLabel = (flight) =>
     .filter(Boolean)
     .join(' ');
 
+// A flight this app added can be changed straight away with the import form. For
+// any other flight the app can only propose a change, which the pilot approves.
 function flightRow(flight, { canPropose }) {
   const label = flightLabel(flight);
+  const own = flight.is_own === true;
   return html`<tr>
     <td>${flight.derived?.date ?? flight.date}</td>
     <td>${flight.flight_number}</td>
     <td>${flight.derived?.from ?? flight.from} to ${flight.derived?.to ?? flight.to}</td>
+    <td>${own ? 'This app' : 'Not this app'}</td>
     <td>${flight.remarks}</td>
-    ${canPropose
-      ? html`<td>
-          <form method="post" action="/propose">
-            <input type="hidden" name="entryId" value="${flight.id}">
-            <input type="hidden" name="label" value="${label}">
-            <input name="remarks" maxlength="${MAX_REMARKS_LENGTH}" placeholder="New remarks" required>
-            <button>Propose</button>
-          </form>
-        </td>`
-      : ''}
+    <td>
+      ${own
+        ? html`<span class="muted">Added by this app. Change it with the <a href="/">import form</a>, which changes it directly.</span>`
+        : canPropose
+          ? html`<form method="post" action="/propose">
+              <input type="hidden" name="entryId" value="${flight.id}">
+              <input type="hidden" name="label" value="${label}">
+              <input name="remarks" maxlength="${MAX_REMARKS_LENGTH}" placeholder="New remarks" required>
+              <button>Propose a change</button>
+            </form>`
+          : ''}
+    </td>
   </tr>`;
 }
 
@@ -189,17 +195,16 @@ export function logbookPage({ pilot, recent, canPropose, flash }) {
       </section>
       <section>
         <h2>Newest flights</h2>
-        <p>From <code>GET /api/partner/v1/entries</code>, newest first. Jetlog sends flights oldest first, so the sample loads the last 60 days and shows the end of the list.</p>
+        <p>From <code>GET /api/partner/v1/entries</code>, newest first. Jetlog sends flights oldest first, so the sample asks for the flights of the last 60 days and shows the end of the list.</p>
         ${recent.incomplete ? html`<div class="box warn">The sample stops after ${recent.loaded} flights, so there may be newer ones.</div>` : ''}
         ${recent.flights.length
           ? html`<table>
-              <tr><th>Date</th><th>Flight</th><th>Route</th><th>Remarks</th>${canPropose ? html`<th>Propose new remarks</th>` : ''}</tr>
+              <tr><th>Date</th><th>Flight</th><th>Route</th><th>Added by</th><th>Remarks</th><th>Change</th></tr>
               ${recent.flights.map((flight) => flightRow(flight, { canPropose }))}
             </table>`
           : html`<p>No flights in the last 60 days. Add one on the home page and come back.</p>`}
-        ${canPropose
-          ? html`<p class="muted">A proposal does not change the flight. Jetlog stores it, tells the pilot, and applies it only after the pilot approves it in the Jetlog app. For flights this app added itself, use the import form, which changes them directly.</p>`
-          : html`<p class="muted">Proposing changes needs the scope <code>write</code>, which was not granted.</p>`}
+        <p class="muted">Jetlog marks the flights this app added with <code>is_own</code>. The import form changes those directly. For every other flight the app can only propose a change. A proposal does not change the flight: Jetlog stores it, tells the pilot, and applies it only after the pilot approves it in the Jetlog app.</p>
+        ${canPropose ? '' : html`<p class="muted">Proposing changes needs the scope <code>write</code>, which was not granted.</p>`}
       </section>`,
   });
 }
@@ -246,7 +251,7 @@ function operationsSection(operations) {
       <tr><th>#</th><th>Operation</th><th>Id</th>${hasResult ? html`<th>Result</th>` : ''}</tr>
       ${operations.map(
         (operation, position) => html`<tr>
-          <td>${operation.index ?? position}</td>
+          <td>${(operation.index ?? position) + 1}</td>
           <td>${operation.op} ${operation.resource}</td>
           <td><code>${operation.id}</code></td>
           ${hasResult ? html`<td>${operation.applied ? 'Applied' : 'Not applied'}</td>` : ''}
@@ -280,6 +285,23 @@ export function changePage({ change, flash }) {
         ${previewSection(change.preview)}
         ${operationsSection(change.operations)}
         <p><a href="/changes/${encodeURIComponent(change.id)}">Check again</a> or <a href="/logbook">go back to the logbook</a>.</p>
+      </section>`,
+  });
+}
+
+// The status of a proposal could not be read. The page stays here instead of
+// sending the pilot elsewhere, so a wait that Jetlog asks for is shown where the
+// poll was made.
+export function changeUnavailablePage({ id, flash }) {
+  return layout({
+    title: 'Proposal, Jetlog Sample App',
+    flash,
+    canRead: true,
+    body: html`
+      <section>
+        <h2>Proposal ${id}</h2>
+        <p>The status could not be read right now.</p>
+        <p><a href="/changes/${encodeURIComponent(id)}">Check again</a> or <a href="/logbook">go back to the logbook</a>.</p>
       </section>`,
   });
 }

@@ -49,9 +49,9 @@ The tokens of the one local user are kept in `tokens.json` next to the code. The
 
 5. **Add a flight.** Fill in a date, flight number, from and to, and press the button. The sample sends one flight to the import route and shows what Jetlog answered, including every `skipped` row and every warning. Send the same flight twice and Jetlog matches it instead of adding a second one.
 
-6. **The logbook page** (whole logbook only) shows who is connected and the newest flights. Jetlog answers `/me` with ids only, no name and no email. The sample looks up the person with `self_person_id` in the people list and shows that name, and says so when that person is not in the list. Flights come from `/entries`, oldest first, so the sample asks for the last 60 days and follows the pages to the end to find the newest.
+6. **The logbook page** (whole logbook only) shows who is connected and the newest flights. Jetlog answers `/me` with ids only, no name and no email. The sample looks up the person with `self_person_id` in the people list and shows that name, and says so when that person is not in the list. Flights come from `/entries`, oldest first, so the sample asks for the flights of the last 60 days and follows the pages to the end to find the newest. Each flight has `is_own`, which is true when this app added it, and the page shows that in the column "Added by". For a flight the app added, the page points at the import form, which changes it directly. For every other flight it offers "Propose a change".
 
-7. **Propose a change** (whole logbook only). Type new remarks on a flight and press Propose. Nothing changes in the logbook. Jetlog stores the proposal and notifies the pilot. Open the Jetlog app, review the change, and approve or reject it. The status page of the sample shows `pending`, the fields the proposal changes with their value before and after, and the operations. After you decided in the app it shows `applied` or `rejected`.
+7. **Propose a change** (whole logbook only). Type new remarks on a flight that this app did not add and press "Propose a change". Nothing changes in the logbook. Jetlog stores the proposal and notifies the pilot. Open the Jetlog app, review the change, and approve or reject it. The status page of the sample shows `pending`, the fields the proposal changes with their value before and after, and the operations. After you decided in the app it shows `applied` or `rejected`.
 
    A pilot can approve only some of the operations of a proposal. Once a proposal is `applied`, every operation says whether it was applied, and the sample shows that. A proposal can also end as `expired` (nobody decided within 24 hours), `stale` (something it touches changed after it was made, nothing was applied), `failed` (applying it failed) or `revoked` (the pilot disconnected the app).
 
@@ -75,7 +75,7 @@ The rest is plumbing. `src/app.js` turns browser requests into calls to the func
 
 The refresh rules are the ones from the Jetlog guide, and each has a test:
 
-* Refresh a minute before the access token expires, and when a call answers 401. Repeat the call once.
+* Refresh a minute before the access token expires, and when a call answers 401. Repeat the call once. A call made right after the pilot removed the app also answers 401. The refresh then answers `invalid_grant`, and the sample goes back to its not connected page after one refresh and no retry.
 * One refresh at a time. A refresh token works once, so two refreshes would race and the loser would get `invalid_grant`.
 * Write the new refresh token to storage before using anything else from the response.
 * `invalid_grant` on a refresh means the connection is over. Delete the tokens.
@@ -100,11 +100,13 @@ The guide to the token flow, the import payload and the errors is in [JetlogAPI]
 ## Limits
 
 * An import takes at most 200 entries and 1000 people per request. Include the `people` the entries refer to in the same request.
-* A proposal holds at most 200 operations, expires after 24 hours, and a pilot can have at most 20 open proposals.
+* A request body is at most 2 MB for an import and 256 KB for a proposal. Larger answers `413` with `{"error":"payload_too_large","max_bytes":...}`.
+* A proposal holds at most 200 operations and expires after 24 hours. One connection can have at most 5 open proposals.
+* A proposal may only hold the resources `entry` and `person`, and only a short list of fields, and only when the pilot would see the change. For a flight the fields are `type`, `flight_number`, `date`, `registration`, `from`, `to`, `off_blocks`, `airborne`, `touchdown`, `on_blocks`, `remarks`, `people` and `is_deleted`. On a flight that Jetlog tracks, the times and registration follow the flight feed, so a proposal for them is refused. For a person they are `first_name`, `last_name`, `default_role`, `employee_number`, `is_imported_from_other_logbook` and `is_deleted`. A new flight has `type: "flight"`. A flight can be proposed on only when it is not deleted and not a simulator session. Anything else is a `422` that names the field and the reason in plain words, and the sample shows Jetlog's own sentence.
 * A proposal cannot touch files, photos, signatures or signing links. Jetlog refuses it with a 403 `insufficient_scope`, whatever the pilot would approve. The read routes send no signature, attachment or photo fields either.
 * An access token lasts one hour. A refresh token lasts 90 days from the moment it is issued and is replaced on every refresh. A pilot who does not use your app for 90 days connects again.
 * An authorization code is valid for 60 seconds and works once.
-* Jetlog can answer `429` with a `Retry-After` header. Wait that many seconds, then send the same request again.
+* Jetlog can answer `429` with a `Retry-After` header. Wait that many seconds, then send the same request again. Reading the logbook and checking the status of a proposal share one rate limit per connection. The status page of the sample does not refresh by itself, so it never polls. If yours does, back off by the `Retry-After` of a `429`.
 
 ## License
 

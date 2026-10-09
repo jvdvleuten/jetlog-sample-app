@@ -153,14 +153,22 @@ function explainApiError(err, context) {
   }
 
   if (status === 413) {
-    // The import route sends { error, max }. A proposal sends a nested error whose
-    // message already carries the count, such as "Too many operations (201)".
+    // A body that is too big for the route: { error: "payload_too_large", max_bytes }.
+    if (code === 'payload_too_large') {
+      return {
+        title: 'The request body is too big',
+        lines: [`Jetlog accepts at most ${formatBytes(err.body?.max_bytes)} in one request to this route. Nothing was written.`, 'Split it into smaller requests.'],
+      };
+    }
+    // A proposal with too many operations sends a nested error whose message
+    // already carries the count, such as "Too many operations (201)".
     if (typeof err.body?.error === 'object') {
       return {
         title: 'The proposal is too big',
         lines: [`${err.message}. A proposal holds at most 200 operations. Nothing was written.`, 'Split it into smaller proposals.'],
       };
     }
+    // The import route sends { error, max } for too many entries or people.
     const max = err.body?.max;
     return {
       title: 'The request is too big',
@@ -190,13 +198,15 @@ function explainApiError(err, context) {
   if (status === 409 && code === 'open_cap_reached') {
     return {
       title: 'Too many open proposals',
-      lines: ['This pilot already has 20 open proposals. They have to be approved, rejected or expire first.'],
+      lines: ['This connection already has 5 open proposals. They have to be approved, rejected or expire first.'],
     };
   }
 
+  // Jetlog names the operation and says in its own plain words what is not
+  // allowed, for example "connected apps cannot propose manual_times". Show that.
   if (status === 422) {
     const lines = err.fieldErrors.length
-      ? err.fieldErrors.map((e) => `${e.field ?? 'request'}: ${e.message}`)
+      ? err.fieldErrors.map(describeFieldError)
       : [err.message];
     return { title: 'Jetlog rejected the proposal', lines: [...lines, 'Nothing was written.'] };
   }
@@ -214,4 +224,15 @@ function explainApiError(err, context) {
     if (context === 'import') lines.push('Sending a payload again is safe, because Jetlog matches flights instead of duplicating them.');
   }
   return { title: `Jetlog answered ${status}`, lines };
+}
+
+// "Operation 1: <Jetlog's message>". Jetlog numbers operations from 0, the page numbers them from 1.
+function describeFieldError({ index, field, message }) {
+  const where = typeof index === 'number' ? `Operation ${index + 1}: ` : field ? `${field}: ` : '';
+  return `${where}${message}`;
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return 'a fixed number of bytes';
+  return bytes >= 1024 * 1024 ? `${bytes / (1024 * 1024)} MB` : `${Math.round(bytes / 1024)} KB`;
 }

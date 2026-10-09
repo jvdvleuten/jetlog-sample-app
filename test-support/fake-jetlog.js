@@ -6,8 +6,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 
-// A flight as the read routes send it: the fields of the app's own query answer.
-// There is no signature, attachment or photo field in it, on purpose.
+// A flight as the read routes send it: the fields of the app's own query answer,
+// plus is_own. There is no signature, attachment, photo, entry_source or feed
+// (*_system) field in it, on purpose.
 export function makeEntry(n, date, overrides = {}) {
   const id = `entry-${String(n).padStart(3, '0')}`;
   return {
@@ -15,7 +16,7 @@ export function makeEntry(n, date, overrides = {}) {
     version: 1,
     type: 'flight',
     date,
-    entry_source: 'app',
+    is_own: false,
     flight_number: `KL${n}`,
     registration: null,
     from: 'EHAM',
@@ -80,7 +81,8 @@ export async function startFakeJetlog() {
     ],
     entries: [],
     maxPageSize: 200,
-    openProposalCap: 20,
+    // Open proposals allowed for this connection.
+    openProposalCap: 5,
     // Called for every request that reaches an API route, after the token is accepted.
     onApiRequest: null,
     importResponse: null,
@@ -126,6 +128,12 @@ export async function startFakeJetlog() {
       back.searchParams.set('iss', fake.url);
       back.searchParams.set('state', query.get('state'));
       return back.toString();
+    },
+
+    // The pilot removes the app in Jetlog: every refresh token is revoked, so the
+    // access tokens answer 401 and a refresh answers invalid_grant.
+    pilotRemovesApp() {
+      for (const record of refreshTokens.values()) record.revoked = true;
     },
 
     // Every access token handed out so far now answers 401.
@@ -334,6 +342,9 @@ export async function startFakeJetlog() {
   function entriesPage(query) {
     const limit = Math.min(Number(query.limit ?? 50), fake.maxPageSize);
     const sorted = [...fake.entries]
+      // Deleted flights are never returned, whatever include_deleted says.
+      .filter((entry) => !entry.is_deleted)
+      .filter((entry) => !query.type || entry.type === query.type)
       .filter((entry) => !query.from || entry.date >= query.from)
       .sort((a, b) => (a.date + a.id).localeCompare(b.date + b.id))
       .filter((entry) => !query.after_date || entry.date + entry.id > query.after_date + query.after_id);
@@ -360,6 +371,65 @@ export async function startFakeJetlog() {
     return null;
   }
 
+  // What an app may put in a proposal: entries and people, and only the fields the
+  // pilot is shown a before and after value for.
+  const ENTRY_KEYS = ['type', 'flight_number', 'date', 'registration', 'from', 'to', 'off_blocks', 'airborne', 'touchdown', 'on_blocks', 'remarks', 'people', 'is_deleted'];
+  const PERSON_KEYS = ['first_name', 'last_name', 'default_role', 'employee_number', 'is_imported_from_other_logbook', 'is_deleted'];
+  // On a flight that Jetlog tracks, these follow the flight feed.
+  const FEED_KEYS = ['registration', 'off_blocks', 'airborne', 'touchdown', 'on_blocks'];
+
+  function proposalErrors(operations) {
+    const errors = [];
+    const refuse = (index, field, message) => errors.push({ field, index, message });
+
+    for (const [index, operation] of operations.entries()) {
+      if (!['create', 'update', 'delete'].includes(operation.op)) {
+        refuse(index, 'op', 'must be one of ["create", "update", "delete"]');
+        continue;
+      }
+      if (!['entry', 'person'].includes(operation.resource)) {
+        refuse(index, 'resource', `connected apps cannot propose changes to ${operation.resource}`);
+        continue;
+      }
+
+      const data = operation.data ?? {};
+      const allowed = operation.resource === 'entry' ? ENTRY_KEYS : PERSON_KEYS;
+
+      if (operation.resource === 'entry') {
+        if (operation.op === 'create' && data.type !== 'flight') {
+          refuse(index, 'type', 'connected apps can only add flights (type "flight")');
+        } else if (operation.op !== 'create' && 'type' in data && data.type !== 'flight') {
+          refuse(index, 'type', 'connected apps can only change flights (type "flight")');
+        }
+      }
+      for (const key of Object.keys(data)) {
+        if (!allowed.includes(key)) refuse(index, key, `connected apps cannot propose ${key}`);
+      }
+      if (Array.isArray(data.people) && data.people.length > 20) {
+        refuse(index, 'people', 'at most 20 crew members per flight');
+      }
+
+      if (operation.op === 'create') continue;
+      if (typeof operation.id !== 'string') {
+        refuse(index, 'id', 'required for update/delete');
+        continue;
+      }
+      if (operation.resource === 'entry') {
+        const target = fake.entries.find((row) => row.id === operation.id && !row.is_deleted && row.type === 'flight');
+        if (!target) {
+          refuse(index, 'id', `entry ${operation.id} not found`);
+        } else if (target.update_flight_data === true) {
+          for (const key of Object.keys(data).filter((candidate) => FEED_KEYS.includes(candidate))) {
+            refuse(index, key, `${key} would change nothing you can see in the logbook for this flight (it follows the flight feed), so connected apps cannot propose it`);
+          }
+        }
+      } else if (!fake.people.some((person) => person.id === operation.id)) {
+        refuse(index, 'id', `person ${operation.id} not found`);
+      }
+    }
+    return errors;
+  }
+
   function proposeChange(body, reply) {
     const operations = Array.isArray(body.operations) ? body.operations : [];
 
@@ -376,18 +446,7 @@ export async function startFakeJetlog() {
       });
     }
 
-    const errors = [];
-    if (operations.length === 0) errors.push({ index: null, field: 'operations', message: 'must not be empty' });
-    for (const [index, operation] of operations.entries()) {
-      if (!['create', 'update', 'delete'].includes(operation.op)) {
-        errors.push({ index, field: 'op', message: 'must be one of ["create", "update", "delete"]' });
-      }
-      if (operation.op !== 'create' && typeof operation.id !== 'string') {
-        errors.push({ index, field: 'id', message: 'required for update/delete' });
-      } else if (operation.op !== 'create' && !fake.entries.some((row) => row.id === operation.id)) {
-        errors.push({ index, field: 'id', message: 'entry not found' });
-      }
-    }
+    const errors = operations.length === 0 ? [{ index: null, field: 'operations', message: 'must not be empty' }] : proposalErrors(operations);
     if (errors.length) return reply(422, { error: { message: 'Invalid operations', errors } });
 
     const open = [...changes.values()].filter((change) => change.status === 'pending').length;
@@ -445,6 +504,14 @@ export async function startFakeJetlog() {
       : contentType.includes('json')
         ? JSON.parse(text)
         : Object.fromEntries(new URLSearchParams(text));
+
+    // The two POST routes have a size limit, checked before anything else.
+    const limit = { '/api/partner/v1/changes': 256 * 1024, '/api/partner/v1/import': 2 * 1024 * 1024 }[url.pathname];
+    if (req.method === 'POST' && limit && Buffer.byteLength(text) > limit) {
+      fake.requests.push({ method: req.method, path: url.pathname, query: {}, headers: req.headers, body: null });
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'payload_too_large', max_bytes: limit }));
+    }
 
     const request = {
       method: req.method,

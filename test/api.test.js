@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { explainError, JetlogApiError } from '../src/errors.js';
+import { DisconnectedError, explainError, JetlogApiError } from '../src/errors.js';
 import { buildImportPayload, buildRemarksProposal } from '../src/jetlog-api.js';
 import { describeChangeStatus, describeSkip, describeWarning } from '../src/plain-words.js';
 import { importResultFlash } from '../src/views.js';
@@ -269,6 +269,8 @@ test('the newest flights are found even when the list is longer than one page', 
   assert.equal(recent.loaded, 8);
   assert.equal(h.fake.requestsTo('/api/partner/v1/entries').length, 3);
   assert.equal(h.fake.requestsTo('/api/partner/v1/entries')[1].query.after_id, 'entry-003');
+  // Every page asks for flights only, not just the first.
+  assert.ok(h.fake.requestsTo('/api/partner/v1/entries').every((request) => request.query.type === 'flight'));
 });
 
 test('the sample stops after five pages and says the list may be incomplete', async (t) => {
@@ -349,17 +351,19 @@ test('a proposal Jetlog refuses shows the field errors', async (t) => {
   assert.deepEqual(explainError(err).lines, ['operations: must not be empty', 'Nothing was written.']);
 });
 
-test('the open proposal limit is explained', async (t) => {
+test('the sixth open proposal of a connection is refused, and the sentence says five', async (t) => {
   const h = await setup();
   t.after(h.cleanup);
   await h.connect('full');
-  h.fake.openProposalCap = 0;
-
   h.fake.entries = [entry(1, '2026-09-01')];
-  const err = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'x' })));
+
+  const proposal = buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'x' });
+  for (let count = 0; count < 5; count += 1) await h.api.proposeChanges(proposal);
+
+  const err = await failure(h.api.proposeChanges(proposal));
   assert.equal(err.status, 409);
   assert.equal(err.code, 'open_cap_reached');
-  assert.match(explainError(err).lines.join(' '), /20 open proposals/);
+  assert.match(explainError(err).lines.join(' '), /This connection already has 5 open proposals/);
 });
 
 test('every status of a proposal has plain words, and pending says nothing changed', () => {
@@ -477,7 +481,7 @@ test('a proposal for a flight that does not exist is a 422 with the field error'
 
   const err = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'nope', label: 'x', remarks: 'y' })));
   assert.equal(err.status, 422);
-  assert.deepEqual(explainError(err).lines, ['id: entry not found', 'Nothing was written.']);
+  assert.deepEqual(explainError(err).lines, ['Operation 1: entry nope not found', 'Nothing was written.']);
 });
 
 test('the checks run in the order of the real server: scope first, then registration, then access', async (t) => {
@@ -496,4 +500,190 @@ test('the checks run in the order of the real server: scope first, then registra
   full.fake.integrationDisabled = true;
   full.fake.fullAccessDisabled = true;
   assert.equal((await failure(full.api.getMe())).code, 'integration_disabled');
+});
+
+// ---- what an app may propose ----
+
+const propose = (h, operation) => h.api.proposeChanges({ summary: 'x', operations: [operation] });
+const update = (data, id = 'entry-001') => ({ op: 'update', resource: 'entry', id, data });
+
+test('a field an app may not propose is refused with Jetlog own words, and the page shows them', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const err = await failure(propose(h, update({ manual_times: true })));
+  assert.equal(err.status, 422);
+  assert.deepEqual(err.fieldErrors, [{ field: 'manual_times', index: 0, message: 'connected apps cannot propose manual_times' }]);
+  assert.deepEqual(explainError(err).lines, ['Operation 1: connected apps cannot propose manual_times', 'Nothing was written.']);
+  assert.equal(explainError(err).title, 'Jetlog rejected the proposal');
+});
+
+test('an unknown key is refused by name, and nothing else of the operation is dropped quietly', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const err = await failure(propose(h, update({ remarks: 'ok', surprise: 1, fuel_used: 5 })));
+  assert.deepEqual(
+    err.fieldErrors.map((error) => error.field),
+    ['surprise', 'fuel_used'],
+  );
+  assert.equal(h.fake.changes.size, 0);
+});
+
+test('a time on a flight that follows the flight feed is refused, with the reason', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: true })];
+
+  const err = await failure(propose(h, update({ off_blocks: '10:05' })));
+  assert.equal(err.status, 422);
+  assert.match(
+    explainError(err).lines[0],
+    /^Operation 1: off_blocks would change nothing you can see in the logbook for this flight \(it follows the flight feed\), so connected apps cannot propose it$/,
+  );
+});
+
+test('the same time is accepted on a flight that is not tracked', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: false })];
+
+  const change = await propose(h, update({ off_blocks: '10:05' }));
+  assert.equal(change.status, 'pending');
+  assert.deepEqual(change.preview[0].changed_fields, ['off_blocks']);
+});
+
+test('remarks, the field of the sample, is accepted on a tracked flight', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { update_flight_data: true })];
+
+  const change = await h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'Late' }));
+  assert.equal(change.status, 'pending');
+});
+
+test('aircraft, the type of a flight and the crew size have refusals of their own', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const aircraft = await failure(propose(h, { op: 'update', resource: 'aircraft', id: 'a1', data: { registration: 'PHBXD' } }));
+  assert.equal(explainError(aircraft).lines[0], 'Operation 1: connected apps cannot propose changes to aircraft');
+
+  const created = await failure(propose(h, { op: 'create', resource: 'entry', data: { type: 'fstd', date: '2026-09-02' } }));
+  assert.equal(explainError(created).lines[0], 'Operation 1: connected apps can only add flights (type "flight")');
+
+  const changed = await failure(propose(h, update({ type: 'fstd' })));
+  assert.equal(explainError(changed).lines[0], 'Operation 1: connected apps can only change flights (type "flight")');
+
+  const crew = Array.from({ length: 21 }, (_, n) => ({ person_id: `p${n}`, role: 'FO' }));
+  const tooMany = await failure(propose(h, update({ people: crew })));
+  assert.equal(explainError(tooMany).lines[0], 'Operation 1: at most 20 crew members per flight');
+});
+
+test('a simulator session or a deleted flight cannot be the target of a proposal', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01', { type: 'fstd' }), entry(2, '2026-09-02', { is_deleted: true })];
+
+  const simulator = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'x', remarks: 'y' })));
+  assert.equal(explainError(simulator).lines[0], 'Operation 1: entry entry-001 not found');
+  const deleted = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-002', label: 'x', remarks: 'y' })));
+  assert.equal(explainError(deleted).lines[0], 'Operation 1: entry entry-002 not found');
+});
+
+test('every refused operation of a proposal is listed with its own number', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01'), entry(2, '2026-09-02')];
+
+  const err = await failure(
+    h.api.proposeChanges({
+      summary: 'x',
+      operations: [update({ remarks: 'fine' }), update({ ifr: true }, 'entry-002')],
+    }),
+  );
+  assert.deepEqual(explainError(err).lines, ['Operation 2: connected apps cannot propose ifr', 'Nothing was written.']);
+});
+
+// ---- the size of a request ----
+
+test('an import body over 2 MB is a flat 413 that names the limit', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('own');
+
+  const entries = [{ type: 'flight', date: '2026-08-14', flight_number: 'KL1', from: 'EHAM', to: 'EGLL', remarks: 'x'.repeat(2 * 1024 * 1024) }];
+  const err = await failure(h.api.importFlights({ entries, people: [] }));
+
+  assert.equal(err.status, 413);
+  assert.equal(err.code, 'payload_too_large');
+  assert.equal(err.body.max_bytes, 2097152);
+  assert.equal(explainError(err).title, 'The request body is too big');
+  assert.match(explainError(err).lines.join(' '), /at most 2 MB in one request/);
+  assert.match(explainError(err).lines.join(' '), /Nothing was written/);
+});
+
+test('a proposal body over 256 KB is a flat 413 that names the limit', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const err = await failure(h.api.proposeChanges({ summary: 'x'.repeat(256 * 1024), operations: [update({ remarks: 'x' })] }));
+  assert.equal(err.status, 413);
+  assert.equal(err.body.max_bytes, 262144);
+  assert.match(explainError(err).lines.join(' '), /at most 256 KB in one request/);
+});
+
+test('a 413 payload_too_large without max_bytes still reads sensibly', () => {
+  const err = JetlogApiError.fromResult({ status: 413, body: { error: 'payload_too_large' }, retryAfter: null });
+  assert.match(explainError(err).lines[0], /at most a fixed number of bytes/);
+});
+
+// ---- the status poll is rate limited ----
+
+test('a 429 on the status poll carries its wait, and the poll is not repeated by itself', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+  const { id } = await h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'x' }));
+
+  h.fake.respondOnce('GET', `/api/partner/v1/changes/${id}`, { status: 429, headers: { 'Retry-After': '9' }, body: { error: 'rate_limited', retry_after: 9 } });
+  const err = await failure(h.api.getChange(id));
+
+  assert.equal(err.retryAfter, 9);
+  assert.match(explainError(err).lines.join(' '), /wait 9 seconds/);
+  assert.equal(h.fake.requestsTo(`/api/partner/v1/changes/${id}`).length, 1);
+});
+
+// ---- a proposal after the pilot removed the app ----
+
+test('a proposal after the pilot removed the app ends as disconnected after one refresh, not in a loop', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  h.fake.pilotRemovesApp();
+  await assert.rejects(
+    h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'KL1', remarks: 'x' })),
+    (err) => err instanceof DisconnectedError,
+  );
+
+  assert.equal(h.fake.requestsTo('/api/partner/v1/changes').length, 1);
+  assert.equal(h.fake.refreshCalls, 1);
+  assert.equal(h.fake.changes.size, 0);
+  assert.equal(h.store.load(), null);
 });

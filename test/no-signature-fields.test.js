@@ -1,7 +1,8 @@
-// Jetlog's read routes send no signature, attachment or photo fields to an app, and
-// a partner never holds the permissions for them. The sample must not read, show or
-// ask for any of those fields. This test reads the source for their names, so a
-// change that starts using one fails here.
+// Jetlog's read routes send an app no signature, attachment or photo fields, no
+// entry_source, and none of the flight feed columns (the *_system fields). Jetlog
+// says which flights an app added with is_own instead. The sample must not read,
+// show or ask for any of the removed fields. This test reads the source for their
+// names, so a change that starts using one fails here.
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -13,9 +14,12 @@ const FORBIDDEN = [
   /\battachment_count\b/,
   /\bhas_photo\b/,
   /\bphoto_(attachment_id|sha256)\b/,
+  /\bentry_source\b/,
+  /\b(registration|off_blocks|airborne|touchdown|on_blocks)_system\b/,
+  /\bsystem_(date|from|to)\b/,
 ];
 
-test('no source file of the sample mentions a signature, attachment or photo field', () => {
+test('no source file of the sample mentions a signature, attachment, photo, entry_source or feed field', () => {
   const folder = new URL('../src/', import.meta.url);
   const files = readdirSync(folder).filter((name) => name.endsWith('.js'));
   assert.ok(files.length > 5);
@@ -28,8 +32,10 @@ test('no source file of the sample mentions a signature, attachment or photo fie
   }
 });
 
-test('the fake Jetlog sends none of those fields either, so the tests see what a real app sees', async () => {
+test('the fake Jetlog sends none of those fields either, and does send is_own', async () => {
   const { makeEntry } = await import('../test-support/fake-jetlog.js');
-  const text = JSON.stringify(makeEntry(1, '2026-10-01'));
+  const entry = makeEntry(1, '2026-10-01');
+  const text = JSON.stringify(entry);
   for (const pattern of FORBIDDEN) assert.doesNotMatch(text, pattern);
+  assert.equal(entry.is_own, false);
 });

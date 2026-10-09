@@ -67,7 +67,8 @@ export function createJetlogApi({ config, tokens, now = Date.now }) {
   async function listRecentFlights({ days = 60, show = 10 } = {}) {
     const from = new Date(now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const loaded = [];
-    let query = { from, limit: PAGE_SIZE };
+    // Only flights: a proposal cannot target a simulator session.
+    let query = { from, type: 'flight', limit: PAGE_SIZE };
     let more = false;
 
     for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -77,7 +78,7 @@ export function createJetlogApi({ config, tokens, now = Date.now }) {
       const cursor = body.pagination?.next_cursor;
       more = Boolean(body.pagination?.has_more && cursor);
       if (!more) break;
-      query = { from, limit: PAGE_SIZE, after_date: cursor.date, after_id: cursor.id };
+      query = { from, type: 'flight', limit: PAGE_SIZE, after_date: cursor.date, after_id: cursor.id };
     }
 
     return { flights: loaded.slice(-show).reverse(), loaded: loaded.length, incomplete: more };
