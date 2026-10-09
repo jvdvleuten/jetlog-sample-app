@@ -153,6 +153,14 @@ function explainApiError(err, context) {
   }
 
   if (status === 413) {
+    // The import route sends { error, max }. A proposal sends a nested error whose
+    // message already carries the count, such as "Too many operations (201)".
+    if (typeof err.body?.error === 'object') {
+      return {
+        title: 'The proposal is too big',
+        lines: [`${err.message}. A proposal holds at most 200 operations. Nothing was written.`, 'Split it into smaller proposals.'],
+      };
+    }
     const max = err.body?.max;
     return {
       title: 'The request is too big',

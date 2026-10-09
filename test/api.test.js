@@ -466,7 +466,8 @@ test('more than 200 operations is a nested 413 and is explained', async (t) => {
 
   assert.equal(err.status, 413);
   assert.equal(err.code, 'too_many_entries');
-  assert.match(explainError(err).title, /too big/);
+  assert.equal(explainError(err).title, 'The proposal is too big');
+  assert.match(explainError(err).lines.join(' '), /Too many operations \(201\)\. A proposal holds at most 200 operations/);
 });
 
 test('a proposal for a flight that does not exist is a 422 with the field error', async (t) => {
