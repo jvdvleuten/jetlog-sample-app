@@ -1,0 +1,9 @@
+{
+  "client_id": "https://jvdvleuten.github.io/jetlog-sample-app/client.json",
+  "client_name": "Jetlog Sample App",
+  "client_uri": "https://github.com/jvdvleuten/jetlog-sample-app",
+  "redirect_uris": [
+    "http://127.0.0.1:8787/callback",
+    "http://localhost:8787/callback"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "jetlog-sample-app",
+  "version": "1.0.0",
+  "description": "A small sample that shows how an app connects to Jetlog with OAuth.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jvdvleuten/jetlog-sample-app.git"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

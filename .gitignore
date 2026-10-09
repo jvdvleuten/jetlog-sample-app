@@ -1,0 +1,6 @@
+# The sample keeps the tokens of its one local user here. Never commit it.
+tokens.json
+tokens.json.tmp
+
+node_modules/
+.DS_Store
