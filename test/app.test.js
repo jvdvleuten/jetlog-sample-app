@@ -274,6 +274,21 @@ test('a page on another site cannot press a button', async (t) => {
   assert.equal(s.fake.requestsTo('/oauth/revoke').length, 0);
 });
 
+test('a button on the sample\'s own page works in a browser', async (t) => {
+  const s = await startSample(t);
+
+  // A browser sends "Origin: null" on a form post when the page that holds the form
+  // has the referrer policy no-referrer. The pages must not ask for that policy.
+  const page = await fetch(s.base + '/');
+  assert.equal(page.headers.get('referrer-policy'), 'same-origin');
+
+  const own = await s.post('/connect', { access: 'own' }, { Origin: s.base });
+  assert.equal(own.status, 303);
+
+  const opaque = await s.post('/connect', { access: 'own' }, { Origin: 'null' });
+  assert.equal(opaque.status, 403);
+});
+
 test('a request with another Host header is refused', async (t) => {
   const s = await startSample(t);
   const port = new URL(s.base).port;
