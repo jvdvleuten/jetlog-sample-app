@@ -237,7 +237,11 @@ const SECURITY_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
   'Cache-Control': 'no-store',
   'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'",
-  'Referrer-Policy': 'no-referrer',
+  // Not 'no-referrer': with that policy a browser sends "Origin: null" when a form on
+  // these pages is submitted, and isLocalRequest would refuse the sample's own buttons.
+  // 'same-origin' keeps the real Origin for the sample's pages and still sends no
+  // Referer to Jetlog or any other site.
+  'Referrer-Policy': 'same-origin',
   'X-Content-Type-Options': 'nosniff',
 };
 
