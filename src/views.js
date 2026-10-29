@@ -4,7 +4,6 @@ import { html, raw } from './html.js';
 import { describeChangeStatus, describeGrant, describeSkip, describeWarning } from './plain-words.js';
 import { ACCESS_LEVELS } from './connect.js';
 import { LIMITS } from './text-rules.js';
-const MAX_REMARKS_LENGTH = LIMITS.remarks;
 
 const STYLE = `
   :root { color-scheme: light dark; --line: #8884; --muted: #777; }
@@ -172,7 +171,7 @@ function flightRow(flight, { canPropose }) {
           ? html`<form method="post" action="/propose">
               <input type="hidden" name="entryId" value="${flight.id}">
               <input type="hidden" name="label" value="${label}">
-              <input name="remarks" maxlength="${MAX_REMARKS_LENGTH}" placeholder="New remarks" required>
+              <input name="remarks" maxlength="${LIMITS.remarks}" placeholder="New remarks" required>
               <button>Propose a change</button>
             </form>`
           : ''}

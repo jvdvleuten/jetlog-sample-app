@@ -3,7 +3,7 @@
 
 import { handleCallback, startConnect, createPendingAuthorizations } from './connect.js';
 import { explainError } from './errors.js';
-import { buildImportPayload, buildRemarksProposal, createJetlogApi, MAX_REMARKS_LENGTH } from './jetlog-api.js';
+import { buildImportPayload, buildRemarksProposal, createJetlogApi } from './jetlog-api.js';
 import { describeGrant } from './plain-words.js';
 import { TextRuleError } from './text-rules.js';
 import { createTokenManager } from './token-manager.js';
@@ -116,9 +116,7 @@ export function createApp({ config, store, now = Date.now }) {
   async function proposeChange(req, res, form) {
     try {
       const remarks = (form.remarks ?? '').trim();
-      if (!form.entryId || !remarks || remarks.length > MAX_REMARKS_LENGTH) {
-        throw new HttpError(400, `Remarks must have between 1 and ${MAX_REMARKS_LENGTH} characters.`);
-      }
+      if (!form.entryId || !remarks) throw new HttpError(400, 'Remarks must have at least 1 character.');
       const change = await api.proposeChanges(
         buildRemarksProposal({ entryId: form.entryId, label: form.label || 'a flight', remarks }),
       );

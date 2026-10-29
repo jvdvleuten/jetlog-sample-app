@@ -5,9 +5,6 @@ import { JetlogApiError } from './errors.js';
 import { send } from './http.js';
 import { LIMITS, removeHiddenCharacters, requireMaxLength, requireStorable } from './text-rules.js';
 
-// Jetlog documents remarks as free text of at most 1000 characters.
-export const MAX_REMARKS_LENGTH = LIMITS.remarks;
-
 // Flights come back oldest first and one page holds at most 200 of them. To find
 // the newest flights we ask for a recent window and follow the cursor to the end.
 const PAGE_SIZE = 200;
@@ -130,9 +127,16 @@ export function buildImportPayload({ date, flightNumber, from, to }) {
 
 // A change to a flight this app did not add: set its remarks. The operation format
 // is the one of every Jetlog proposal: op, resource, id and the fields to change.
+// Remarks may hold any character except NUL, up to 1000. Throws a TextRuleError.
 export function buildRemarksProposal({ entryId, label, remarks }) {
+  requireStorable('The flight', entryId);
+  requireStorable('Remarks', remarks);
+  requireMaxLength('Remarks', remarks, LIMITS.remarks);
+  const summary = `Set the remarks of ${label}`;
+  requireStorable('The flight label', label);
+  requireMaxLength('The flight label', summary, LIMITS.summary);
   return {
-    summary: `Set the remarks of ${label}`,
+    summary,
     operations: [{ op: 'update', resource: 'entry', id: entryId, data: { remarks } }],
   };
 }

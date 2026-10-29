@@ -460,6 +460,23 @@ test('a refusal of a proposal shows Jetlog own words on the logbook page', async
   assert.match(page.text, /Operation 1: entry entry-001 not found/);
 });
 
+test('remarks with NUL or over 1000 characters are refused without calling Jetlog', async (t) => {
+  const s = await startSample(t);
+  s.fake.entries = [makeEntry(1, '2026-10-01')];
+  await s.connectThroughPages('full');
+
+  for (const [remarks, message] of [
+    ['Late\u0000', /Remarks must not contain the NUL character/],
+    ['x'.repeat(1001), /Remarks must have at most 1000 characters/],
+  ]) {
+    const page = await s.follow(await s.post('/propose', { entryId: 'entry-001', label: 'KL1', remarks }));
+    assert.match(page.text, message);
+  }
+  const label = await s.follow(await s.post('/propose', { entryId: 'entry-001', label: 'K'.repeat(500), remarks: 'Late' }));
+  assert.match(label.text, /The flight label must have at most 500 characters/);
+  assert.equal(s.fake.requestsTo('/api/partner/v1/changes').length, 0);
+});
+
 test('a 429 on the status poll stays on the proposal page and shows the wait', async (t) => {
   const s = await startSample(t);
   s.fake.entries = [makeEntry(1, '2026-10-01')];
