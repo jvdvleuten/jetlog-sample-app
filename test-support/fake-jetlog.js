@@ -305,6 +305,19 @@ export async function startFakeJetlog() {
     const { method, path, query, body } = request;
     const route = path.replace('/api/partner/v1', '');
 
+    // Checked right after the token, on every route, like Jetlog does.
+    const nul = findNul(body, '');
+    if (nul) {
+      const field = route === '/changes' ? nul.path.replace(/^operations\[\d+\]\.(data\.)?/, '') : nul.path;
+      return reply(422, {
+        error: {
+          message: 'Text must not contain the NUL character (U+0000) and must be valid UTF-8',
+          code: 'invalid_text',
+          errors: [{ index: nul.index, field, message: 'must not contain the NUL character (U+0000)' }],
+        },
+      });
+    }
+
     if (method === 'POST' && route === '/import') {
       if (!needs(token, 'import', reply)) return;
       if ((body.entries ?? []).length > 200) return reply(413, { error: 'too_many_entries', max: 200 });
@@ -470,6 +483,18 @@ export async function startFakeJetlog() {
       }
     }
     return errors;
+  }
+
+  // The first string with a NUL: its path in the body, and the first list position on the way.
+  function findNul(value, path, index = null) {
+    if (typeof value === 'string') return value.includes('\u0000') ? { path, index } : null;
+    if (value === null || typeof value !== 'object') return null;
+    for (const [key, child] of Object.entries(value)) {
+      const isListItem = Array.isArray(value);
+      const found = findNul(child, isListItem ? `${path}[${key}]` : path ? `${path}.${key}` : key, isListItem && index === null ? Number(key) : index);
+      if (found) return found;
+    }
+    return null;
   }
 
   function proposeChange(body, reply) {

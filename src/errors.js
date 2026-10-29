@@ -206,8 +206,12 @@ function explainApiError(err, context) {
   // allowed, for example "connected apps cannot propose manual_times". Show that.
   if (status === 422) {
     const lines = err.fieldErrors.length
-      ? err.fieldErrors.map(describeFieldError)
+      ? err.fieldErrors.map((fieldError) => describeFieldError(fieldError, context))
       : [err.message];
+    // NUL or text that is not valid UTF-8, on every route. Nothing is stripped.
+    if (code === 'invalid_text') {
+      return { title: 'Jetlog cannot store that text', lines: [...lines, 'Remove the character and send the request again. Nothing was written.'] };
+    }
     return { title: 'Jetlog rejected the proposal', lines: [...lines, 'Nothing was written.'] };
   }
 
@@ -226,10 +230,13 @@ function explainApiError(err, context) {
   return { title: `Jetlog answered ${status}`, lines };
 }
 
-// "Operation 1: <Jetlog's message>". Jetlog numbers operations from 0, the page numbers them from 1.
-function describeFieldError({ index, field, message }) {
-  const where = typeof index === 'number' ? `Operation ${index + 1}: ` : field ? `${field}: ` : '';
-  return `${where}${message}`;
+// "Operation 1, remarks: <Jetlog's message>". Jetlog numbers operations from 0, the page
+// numbers them from 1. On the import route the field is the whole path in the body,
+// such as entries[0].remarks, and there are no operations.
+function describeFieldError({ index, field, message }, context) {
+  const operation = context !== 'import' && typeof index === 'number' ? `Operation ${index + 1}` : '';
+  const where = [operation, field].filter(Boolean).join(', ');
+  return where ? `${where}: ${message}` : message;
 }
 
 function formatBytes(bytes) {
