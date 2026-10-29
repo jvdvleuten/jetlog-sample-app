@@ -212,6 +212,27 @@ test('a refused import shows a visible error and keeps the connection', async (t
   assert.match(home.text, /Add a flight/);
 });
 
+test('an invalid_text 422 from the import route is shown with its path', async (t) => {
+  const s = await startSample(t);
+  await s.connectThroughPages('own');
+
+  s.fake.respondOnce('POST', '/api/partner/v1/import', {
+    status: 422,
+    body: {
+      error: {
+        message: 'Text must not contain the NUL character (U+0000) and must be valid UTF-8',
+        code: 'invalid_text',
+        errors: [{ index: 0, field: 'entries[0].flight_number', message: 'must not contain the NUL character (U+0000)' }],
+      },
+    },
+  });
+  const home = await s.follow(await s.post('/import', { date: '2026-10-08', flightNumber: 'KL1', from: 'EHAM', to: 'EGLL' }));
+
+  assert.match(home.text, /Jetlog cannot store that text/);
+  assert.match(home.text, /entries\[0\]\.flight_number: must not contain the NUL character/);
+  assert.doesNotMatch(home.text, /rejected the proposal/);
+});
+
 test('a bad date is refused without calling Jetlog', async (t) => {
   const s = await startSample(t);
   await s.connectThroughPages('own');
@@ -457,7 +478,7 @@ test('a refusal of a proposal shows Jetlog own words on the logbook page', async
 
   assert.equal(proposed.location, '/logbook');
   assert.match(page.text, /Jetlog rejected the proposal/);
-  assert.match(page.text, /Operation 1: entry entry-001 not found/);
+  assert.match(page.text, /Operation 1, id: entry entry-001 not found/);
 });
 
 test('remarks with NUL or over 1000 characters are refused without calling Jetlog', async (t) => {

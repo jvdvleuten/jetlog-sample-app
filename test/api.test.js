@@ -481,7 +481,7 @@ test('a proposal for a flight that does not exist is a 422 with the field error'
 
   const err = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'nope', label: 'x', remarks: 'y' })));
   assert.equal(err.status, 422);
-  assert.deepEqual(explainError(err).lines, ['Operation 1: entry nope not found', 'Nothing was written.']);
+  assert.deepEqual(explainError(err).lines, ['Operation 1, id: entry nope not found', 'Nothing was written.']);
 });
 
 test('the checks run in the order of the real server: scope first, then registration, then access', async (t) => {
@@ -516,8 +516,39 @@ test('a field an app may not propose is refused with Jetlog own words, and the p
   const err = await failure(propose(h, update({ manual_times: true })));
   assert.equal(err.status, 422);
   assert.deepEqual(err.fieldErrors, [{ field: 'manual_times', index: 0, message: 'connected apps cannot propose manual_times' }]);
-  assert.deepEqual(explainError(err).lines, ['Operation 1: connected apps cannot propose manual_times', 'Nothing was written.']);
+  assert.deepEqual(explainError(err).lines, ['Operation 1, manual_times: connected apps cannot propose manual_times', 'Nothing was written.']);
   assert.equal(explainError(err).title, 'Jetlog rejected the proposal');
+});
+
+test('NUL in a proposal is a 422 invalid_text that names the operation and the field', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('full');
+  h.fake.entries = [entry(1, '2026-09-01')];
+
+  const err = await failure(propose(h, update({ remarks: 'Late\u0000' })));
+  assert.equal(err.status, 422);
+  assert.equal(err.code, 'invalid_text');
+  assert.deepEqual(err.fieldErrors, [{ index: 0, field: 'remarks', message: 'must not contain the NUL character (U+0000)' }]);
+  assert.equal(explainError(err).title, 'Jetlog cannot store that text');
+  assert.equal(explainError(err).lines[0], 'Operation 1, remarks: must not contain the NUL character (U+0000)');
+});
+
+test('NUL on the import route is a 422 invalid_text that shows the path, not an operation', async (t) => {
+  const h = await setup();
+  t.after(h.cleanup);
+  await h.connect('own');
+
+  const payload = buildImportPayload(flight);
+  payload.entries[0].remarks = 'a\u0000b';
+  const err = await failure(h.api.importFlights(payload));
+
+  assert.equal(err.status, 422);
+  assert.equal(err.code, 'invalid_text');
+  assert.deepEqual(err.fieldErrors, [{ index: 0, field: 'entries[0].remarks', message: 'must not contain the NUL character (U+0000)' }]);
+  const explained = explainError(err, { context: 'import' });
+  assert.equal(explained.title, 'Jetlog cannot store that text');
+  assert.equal(explained.lines[0], 'entries[0].remarks: must not contain the NUL character (U+0000)');
 });
 
 test('an unknown key is refused by name, and nothing else of the operation is dropped quietly', async (t) => {
@@ -547,7 +578,7 @@ test('a time on a flight that follows the flight feed is refused when the logboo
   const err = await failure(propose(h, update({ off_blocks: '10:10' })));
   assert.equal(err.status, 422);
   assert.deepEqual(err.fieldErrors, [{ field: 'off_blocks', index: 0, message: FEED_REFUSAL }]);
-  assert.equal(explainError(err).lines[0], `Operation 1: ${FEED_REFUSAL}`);
+  assert.equal(explainError(err).lines[0], `Operation 1, off_blocks: ${FEED_REFUSAL}`);
   assert.equal(h.fake.changes.size, 0);
 });
 
@@ -597,12 +628,12 @@ test('any other mismatch gets the shorter sentence, and a person says person', a
   h.fake.shownValue = (resource, target, key, proposed) => (key === 'remarks' || key === 'first_name' ? `${proposed} (changed)` : proposed);
 
   const flight = await failure(propose(h, update({ remarks: 'Late' })));
-  assert.equal(explainError(flight).lines[0], `Operation 1: ${OTHER_REFUSAL}`);
+  assert.equal(explainError(flight).lines[0], `Operation 1, remarks: ${OTHER_REFUSAL}`);
 
   const person = await failure(propose(h, { op: 'update', resource: 'person', id: 'user-1', data: { first_name: 'Anne' } }));
   assert.equal(
     explainError(person).lines[0],
-    'Operation 1: Jetlog would show a different value than the one proposed for this person, so connected apps cannot propose it',
+    'Operation 1, first_name: Jetlog would show a different value than the one proposed for this person, so connected apps cannot propose it',
   );
   assert.equal(person.fieldErrors[0].field, 'first_name');
 });
@@ -614,7 +645,7 @@ test('two operations on the same flight in one proposal are refused', async (t) 
   h.fake.entries = [entry(1, '2026-09-01')];
 
   const err = await failure(h.api.proposeChanges({ summary: 'x', operations: [update({ remarks: 'a' }), update({ remarks: 'b' })] }));
-  assert.match(explainError(err).lines[0], /^Operation 2: duplicate entry id entry-001/);
+  assert.match(explainError(err).lines[0], /^Operation 2, id: duplicate entry id entry-001/);
 });
 
 test('the same time is accepted on a flight that is not tracked', async (t) => {
@@ -645,17 +676,17 @@ test('aircraft, the type of a flight and the crew size have refusals of their ow
   h.fake.entries = [entry(1, '2026-09-01')];
 
   const aircraft = await failure(propose(h, { op: 'update', resource: 'aircraft', id: 'a1', data: { registration: 'PHBXD' } }));
-  assert.equal(explainError(aircraft).lines[0], 'Operation 1: connected apps cannot propose changes to aircraft');
+  assert.equal(explainError(aircraft).lines[0], 'Operation 1, resource: connected apps cannot propose changes to aircraft');
 
   const created = await failure(propose(h, { op: 'create', resource: 'entry', data: { type: 'fstd', date: '2026-09-02' } }));
-  assert.equal(explainError(created).lines[0], 'Operation 1: connected apps can only add flights (type "flight")');
+  assert.equal(explainError(created).lines[0], 'Operation 1, type: connected apps can only add flights (type "flight")');
 
   const changed = await failure(propose(h, update({ type: 'fstd' })));
-  assert.equal(explainError(changed).lines[0], 'Operation 1: connected apps can only change flights (type "flight")');
+  assert.equal(explainError(changed).lines[0], 'Operation 1, type: connected apps can only change flights (type "flight")');
 
   const crew = Array.from({ length: 21 }, (_, n) => ({ person_id: `p${n}`, role: 'FO' }));
   const tooMany = await failure(propose(h, update({ people: crew })));
-  assert.equal(explainError(tooMany).lines[0], 'Operation 1: at most 20 crew members per flight');
+  assert.equal(explainError(tooMany).lines[0], 'Operation 1, people: at most 20 crew members per flight');
 });
 
 test('a simulator session or a deleted flight cannot be the target of a proposal', async (t) => {
@@ -665,9 +696,9 @@ test('a simulator session or a deleted flight cannot be the target of a proposal
   h.fake.entries = [entry(1, '2026-09-01', { type: 'fstd' }), entry(2, '2026-09-02', { is_deleted: true })];
 
   const simulator = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-001', label: 'x', remarks: 'y' })));
-  assert.equal(explainError(simulator).lines[0], 'Operation 1: entry entry-001 not found');
+  assert.equal(explainError(simulator).lines[0], 'Operation 1, id: entry entry-001 not found');
   const deleted = await failure(h.api.proposeChanges(buildRemarksProposal({ entryId: 'entry-002', label: 'x', remarks: 'y' })));
-  assert.equal(explainError(deleted).lines[0], 'Operation 1: entry entry-002 not found');
+  assert.equal(explainError(deleted).lines[0], 'Operation 1, id: entry entry-002 not found');
 });
 
 test('every refused operation of a proposal is listed with its own number', async (t) => {
@@ -682,7 +713,7 @@ test('every refused operation of a proposal is listed with its own number', asyn
       operations: [update({ remarks: 'fine' }), update({ ifr: true }, 'entry-002')],
     }),
   );
-  assert.deepEqual(explainError(err).lines, ['Operation 2: connected apps cannot propose ifr', 'Nothing was written.']);
+  assert.deepEqual(explainError(err).lines, ['Operation 2, ifr: connected apps cannot propose ifr', 'Nothing was written.']);
 });
 
 // ---- the size of a request ----

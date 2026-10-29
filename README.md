@@ -80,6 +80,7 @@ The tokens of the one local user are kept in `tokens.json` next to the code. The
 | 7. Tokens: refresh before expiry and on 401, one refresh at a time | `getAccessToken`, `refreshTokens`, `callWithToken` | `src/token-manager.js` |
 | 8. Disconnect | `disconnect` | `src/token-manager.js` |
 | 9. Errors in plain words | `explainError` | `src/errors.js` |
+| 10. Text Jetlog cannot store, checked before sending | `requireStorable`, `requireMaxLength`, `removeHiddenCharacters` | `src/text-rules.js` |
 
 The rest is plumbing. `src/app.js` turns browser requests into calls to the functions above, `src/views.js` and `src/html.js` render the pages, `src/token-store.js` reads and writes `tokens.json`, `src/http.js` wraps `fetch` with a timeout, and `src/config.js` reads the environment. `docs/client.json` is the metadata document of the sample.
 
@@ -132,6 +133,7 @@ The guide to the token flow, the import payload and the errors is in [JetlogAPI]
 At every level:
 
 * An import takes at most 200 entries and 1000 people per request. Include the `people` the entries refer to in the same request.
+* Text with the NUL character (U+0000) is refused in every field with `422` and the code `invalid_text`. The sample checks this, and the length limits, before it sends (`src/text-rules.js`). The import route stores control, bidi and zero-width characters as sent, so the sample removes them from the flight number and the airport codes.
 * A request body is at most 2 MB for an import. Larger answers `413` with `{"error":"payload_too_large","max_bytes":...}`.
 * An access token lasts one hour. A refresh token lasts 90 days from the moment it is issued and is replaced on every refresh. A pilot who does not use your app for 90 days connects again.
 * An authorization code is valid for 60 seconds and works once.
