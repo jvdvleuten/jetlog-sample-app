@@ -14,7 +14,7 @@ export const LIMITS = {
 // Control characters, bidi controls and zero-width characters. A proposal refuses
 // them in codes and numbers. The import route stores them, so this sample removes
 // them from the codes it sends.
-const HIDDEN = /[\x00-\x1F\x7F​-‏‪-‮⁦-⁩﻿]/g;
+const HIDDEN = /[\x00-\x1F\x7F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
 export class TextRuleError extends Error {}
 
@@ -37,7 +37,7 @@ export function characterCount(text) {
 // Throws a TextRuleError that names the field, when the text cannot be stored.
 export function requireStorable(label, text) {
   if (!isStorable(text)) {
-    throw new TextRuleError(`${label} must not contain the NUL character (U+0000) or text that is not valid.`);
+    throw new TextRuleError(`${label} must not contain the NUL character (U+0000) or a broken character.`);
   }
 }
 
