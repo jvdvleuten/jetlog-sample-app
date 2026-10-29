@@ -3,9 +3,10 @@
 
 import { JetlogApiError } from './errors.js';
 import { send } from './http.js';
+import { LIMITS, removeHiddenCharacters, requireMaxLength, requireStorable } from './text-rules.js';
 
 // Jetlog documents remarks as free text of at most 1000 characters.
-export const MAX_REMARKS_LENGTH = 1000;
+export const MAX_REMARKS_LENGTH = LIMITS.remarks;
 
 // Flights come back oldest first and one page holds at most 200 of them. To find
 // the newest flights we ask for a recent window and follow the cursor to the end.
@@ -108,13 +109,22 @@ function requirePendingChange(body) {
 }
 
 // The documented payload of one flight. `from` and `to` are required on this route.
-// An empty flight number is left out, because the field is optional.
+// An empty flight number is left out, because the field is optional. Jetlog refuses
+// NUL and stores control, bidi and zero-width characters as sent, so NUL is refused
+// here and the other hidden characters are removed. Throws a TextRuleError.
 export function buildImportPayload({ date, flightNumber, from, to }) {
+  const code = (label, value) => {
+    const text = String(value ?? '');
+    requireStorable(label, text);
+    const cleaned = removeHiddenCharacters(text).trim().toUpperCase();
+    requireMaxLength(label, cleaned, LIMITS.importText);
+    return cleaned;
+  };
   const entry = { type: 'flight', date: String(date ?? '').trim() };
-  const number = String(flightNumber ?? '').trim().toUpperCase();
+  const number = code('Flight number', flightNumber);
   if (number) entry.flight_number = number;
-  entry.from = String(from ?? '').trim().toUpperCase();
-  entry.to = String(to ?? '').trim().toUpperCase();
+  entry.from = code('From', from);
+  entry.to = code('To', to);
   return { entries: [entry], people: [] };
 }
 

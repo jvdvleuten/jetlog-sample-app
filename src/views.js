@@ -3,7 +3,8 @@
 import { html, raw } from './html.js';
 import { describeChangeStatus, describeGrant, describeSkip, describeWarning } from './plain-words.js';
 import { ACCESS_LEVELS } from './connect.js';
-import { MAX_REMARKS_LENGTH } from './jetlog-api.js';
+import { LIMITS } from './text-rules.js';
+const MAX_REMARKS_LENGTH = LIMITS.remarks;
 
 const STYLE = `
   :root { color-scheme: light dark; --line: #8884; --muted: #777; }
@@ -104,9 +105,9 @@ const importForm = ({ today }) => html`
     <p>Sends one flight to <code>POST /api/partner/v1/import</code>. Sending the same flight again matches it instead of adding a second one.</p>
     <form method="post" action="/import">
       <label>Date <input type="date" name="date" value="${today}" required></label>
-      <label>Flight number <input name="flightNumber" value="KL1023" size="8"></label>
-      <label>From <input name="from" value="EHAM" size="5" required></label>
-      <label>To <input name="to" value="EGLL" size="5" required></label>
+      <label>Flight number <input name="flightNumber" value="KL1023" size="8" maxlength="${LIMITS.importText}"></label>
+      <label>From <input name="from" value="EHAM" size="5" maxlength="${LIMITS.importText}" required></label>
+      <label>To <input name="to" value="EGLL" size="5" maxlength="${LIMITS.importText}" required></label>
       <button>Add flight</button>
     </form>
   </section>`;

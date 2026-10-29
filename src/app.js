@@ -5,6 +5,7 @@ import { handleCallback, startConnect, createPendingAuthorizations } from './con
 import { explainError } from './errors.js';
 import { buildImportPayload, buildRemarksProposal, createJetlogApi, MAX_REMARKS_LENGTH } from './jetlog-api.js';
 import { describeGrant } from './plain-words.js';
+import { TextRuleError } from './text-rules.js';
 import { createTokenManager } from './token-manager.js';
 import {
   changePage,
@@ -22,6 +23,9 @@ class HttpError extends Error {
     this.status = status;
   }
 }
+
+// A refusal of the pilot's input, made here before anything is sent to Jetlog.
+const isRefusal = (err) => err instanceof HttpError || err instanceof TextRuleError;
 
 export function createApp({ config, store, now = Date.now }) {
   const tokens = createTokenManager({ config, store, now });
@@ -91,7 +95,7 @@ export function createApp({ config, store, now = Date.now }) {
       const result = await api.importFlights(buildImportPayload(form));
       flash = importResultFlash(result);
     } catch (err) {
-      flash = err instanceof HttpError ? { kind: 'error', title: err.message } : errorFlash(err, 'import');
+      flash = isRefusal(err) ? { kind: 'error', title: err.message } : errorFlash(err, 'import');
     }
     redirect(res, '/');
   }
@@ -121,7 +125,7 @@ export function createApp({ config, store, now = Date.now }) {
       flash = proposalFlash();
       redirect(res, `/changes/${encodeURIComponent(change.id)}`);
     } catch (err) {
-      flash = err instanceof HttpError ? { kind: 'error', title: err.message } : errorFlash(err);
+      flash = isRefusal(err) ? { kind: 'error', title: err.message } : errorFlash(err);
       // When Jetlog ended the connection (for example the pilot removed the app a
       // moment ago), the tokens are gone and the pilot goes home to connect again.
       redirect(res, store.load() ? '/logbook' : '/');

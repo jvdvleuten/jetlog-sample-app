@@ -222,6 +222,31 @@ test('a bad date is refused without calling Jetlog', async (t) => {
   assert.equal(s.fake.requestsTo('/api/partner/v1/import').length, 0);
 });
 
+test('an import with NUL is refused without calling Jetlog, and hidden characters are removed from the codes', async (t) => {
+  const s = await startSample(t);
+  await s.connectThroughPages('own');
+
+  const refused = await s.post('/import', { date: '2026-10-08', flightNumber: 'KL\u0000', from: 'EHAM', to: 'EGLL' });
+  const home = await s.follow(refused);
+  assert.match(home.text, /Flight number must not contain the NUL character/);
+  assert.equal(s.fake.requestsTo('/api/partner/v1/import').length, 0);
+
+  await s.post('/import', { date: '2026-10-08', flightNumber: 'KL\u200B10\u202E23', from: ' e\tham ', to: 'EGLL\uFEFF' });
+  const sent = s.fake.requestsTo('/api/partner/v1/import')[0].body.entries[0];
+  assert.deepEqual([sent.flight_number, sent.from, sent.to], ['KL1023', 'EHAM', 'EGLL']);
+});
+
+test('an import field longer than 255 characters is refused, and the inputs say so', async (t) => {
+  const s = await startSample(t);
+  await s.connectThroughPages('own');
+
+  const refused = await s.post('/import', { date: '2026-10-08', flightNumber: 'K'.repeat(256), from: 'EHAM', to: 'EGLL' });
+  const home = await s.follow(refused);
+  assert.match(home.text, /Flight number must have at most 255 characters/);
+  assert.match(home.text, /name="from" value="EHAM" size="5" maxlength="255"/);
+  assert.equal(s.fake.requestsTo('/api/partner/v1/import').length, 0);
+});
+
 test('when the connection has ended at Jetlog, the page says so and the tokens are gone', async (t) => {
   const s = await startSample(t);
   await s.connectThroughPages('full');
